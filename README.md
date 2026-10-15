@@ -638,6 +638,19 @@ Como cada aplicativo entrega os dados:
 | FeatherSlide | grade (linhas e colunas) do elemento do slide; ou dados editados no FeatherSheet | grade guardada no `.fsdz`; conversão para `Grafico` com paleta do slide | Pronto (via `Grafico` e `cena_motor`) |
 | Qualquer um | séries soltas em código (testes, exemplos, MCP) | nenhum | Pronto |
 
+### Editar os dados do gráfico (FeatherDocs e FeatherSlide)
+
+Decisão do usuário (14/10/2026), vale para todo gráfico fora do FeatherSheet:
+
+| Situação | O que o gráfico oferece | Estado |
+|---|---|---|
+| FeatherSheet **instalado** | "Abrir tabela no FeatherSheet": a tabela que alimenta o gráfico abre no FeatherSheet, com tudo o que ele faz; ao salvar, o gráfico se atualiza | Planejado |
+| FeatherSheet **não instalado** | mini janela de dados: interface enxuta, sem muita coisa na tela, mas capaz de fazer bastante coisa com os dados (o quanto ela calcula ainda será definido) | Planejado |
+
+A detecção usa o instalador modular da suíte (cada produto pode ser instalado
+sozinho). A biblioteca continua sem ler planilha: as duas janelas só entregam
+as séries pelo contrato acima.
+
 Planejado:
 
 - **Séries com X temporal** (`Vec<f64>` de datas serial) e eixo de datas.

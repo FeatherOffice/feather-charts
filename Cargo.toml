@@ -1,7 +1,7 @@
 [package]
 name = "feather-charts"
-version = "0.1.0"
-description = "Motor de gráficos da suíte FeatherOffice: dados, geometria, eixos, 25 tipos de gráfico, interação e saída em cena vetorial, SVG e PDF"
+version = "0.2.0"
+description = "Motor de gráficos da suíte FeatherOffice: dados, geometria, eixos, 25 tipos de gráfico, estilos visuais e temáticas, interação e saída em cena vetorial, SVG e PDF"
 authors = ["FeatherOffice"]
 edition = "2021"
 rust-version = "1.77.2"

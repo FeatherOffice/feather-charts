@@ -391,7 +391,7 @@ Eixo X (categorias ou valores), Y (valores), Y secundário, X secundário e Z
 | Marcadores | forma: círculo, quadrado, losango, triângulo (cima, baixo), cruz, x, estrela, traço, ponto, imagem | Parcial (círculo, quadrado, nenhum) |
 | Tamanho do marcador | pontos | Pronto (global) |
 | Cor e borda do marcador | preenchimento, contorno, espessura | Parcial |
-| Suavização | linha curva por série | Planejado |
+| Suavização | linha curva por série | Pronto (`Suavizacao`, curva monótona de Fritsch–Carlson em Béziers cúbicas; sem tensão ajustável) |
 | Dados ausentes | lacuna, zero, interpolar | Planejado |
 | Largura do espaçamento (gap) | % da largura da barra | Planejado (fixo em 72% da faixa) |
 | Sobreposição de séries | -100% a 100% | Planejado |
@@ -402,7 +402,7 @@ Eixo X (categorias ou valores), Y (valores), Y secundário, X secundário e Z
 | Ângulo do primeiro setor e sentido | pizza e rosca | Planejado (fixo em -90 graus) |
 | Explosão | de todas as fatias ou de uma só, em % do raio | Planejado |
 | Furo da rosca | % do raio | Planejado |
-| Série oculta / filtrada | sem apagar os dados | Planejado |
+| Série oculta / filtrada | sem apagar os dados | Parcial (`FiltroLegenda`: a cena e os eixos recalculam sem a série; falta lembrar no arquivo) |
 | Sombra, brilho, relevo 3D, bisel | | Planejado |
 | Profundidade e formato 3D | | Planejado |
 | Ordenação visual | por valor, sem alterar a fonte | Planejado |
@@ -509,7 +509,7 @@ Eixo X (categorias ou valores), Y (valores), Y secundário, X secundário e Z
 | Modelo de gráfico salvo pelo usuário | exportar/importar todas as propriedades (formato `.fchart`, TOML/JSON) e aplicar a outro gráfico | Planejado |
 | Definir como padrão | modelo padrão para novos gráficos | Planejado |
 | Herdar tema do documento/slide | cores do tema do Docs e do Slide | Planejado |
-| Temáticas de cores | conjuntos nomeados que trocam todas as cores do gráfico de uma vez (fundo, séries, grade, texto): Oceano, Floresta, Pôr do sol, Terra, Neon, Pastel, Outono, Inverno, Café, Monocromático azul/verde/cinza, Corporativo, Alto contraste; escolha com prévia ao passar o mouse; temática do usuário salva | Planejado |
+| Temáticas de cores | conjuntos nomeados que trocam todas as cores do gráfico de uma vez (fundo, séries, grade, texto): Oceano, Floresta, Pôr do sol, Terra, Neon, Pastel, Outono, Inverno, Café, Monocromático azul/verde/cinza, Corporativo, Alto contraste; escolha com prévia ao passar o mouse; temática do usuário salva | Parcial (`temas`: 14 conjuntos, `Tema::aplicar`; falta prévia ao passar o mouse e temática do usuário salva) |
 | Cor por regra | cor do ponto conforme o valor (acima da meta verde, abaixo vermelho; escala de cor contínua) | Planejado |
 | Contraste mínimo | aviso quando texto/fundo não atinge 4,5:1 | Planejado |
 
@@ -538,7 +538,7 @@ FeatherSlide.
 | Zoom e rolagem em séries longas | janela de dados, roda do mouse, arrastar, mini-mapa | Planejado |
 | Seleção por retângulo (brush) | filtra os pontos | Planejado |
 | Cursor cruzado (crosshair) | linhas vertical e horizontal | Planejado |
-| Filtro interativo pela legenda | clicar num item da legenda esconde/mostra aquela série ou categoria (pizza: a fatia); eixos e totais se recalculam na hora; Ctrl+clique mostra só aquele item; duplo clique volta tudo; o item filtrado fica esmaecido na legenda | Planejado |
+| Filtro interativo pela legenda | clicar num item da legenda esconde/mostra aquela série ou categoria (pizza: a fatia); eixos e totais se recalculam na hora; Ctrl+clique mostra só aquele item; duplo clique volta tudo; o item filtrado fica esmaecido na legenda | Parcial (motor pronto: `FiltroLegenda`, `clicar_legenda`, `hit_test_legenda`, item esmaecido; o duplo clique e o botão de limpar ficam com o app) |
 | Filtro interativo pelos dados | clicar numa barra/fatia/ponto filtra os outros gráficos do mesmo painel por aquela categoria (filtro cruzado) | Planejado |
 | Lembrar o filtro | o estado do filtro é guardado com o gráfico no arquivo e pode ser limpo com um botão | Planejado |
 | Clique no elemento | evento para o app abrir o diálogo de formatar | Planejado |
@@ -600,10 +600,10 @@ combinável com qualquer tipo de gráfico em que faça sentido.
 
 | Estilo ou efeito | Como fica | Estado |
 |---|---|---|
-| Neon | linhas e bordas com brilho (glow) colorido sobre fundo escuro; espessura e intensidade do brilho ajustáveis | Planejado |
-| Barras e colunas arredondadas | raio no topo, nos dois lados ou em todos os cantos; raio em px ou % da largura | Planejado |
-| Linha suavizada | curva (spline monótona, sem passar do valor real) por série, com tensão ajustável | Planejado |
-| Área com gradiente | preenchimento que esmaece até transparente na base | Planejado |
+| Neon | linhas e bordas com brilho (glow) colorido sobre fundo escuro; espessura e intensidade do brilho ajustáveis | Pronto (`AparenciaGrafico::neon`: brilho em linhas, bordas de área e colunas/barras; pizza ainda sem) |
+| Barras e colunas arredondadas | raio no topo, nos dois lados ou em todos os cantos; raio em px ou % da largura | Pronto (`Arredondamento`; só topo, topo e base ou todos; empilhadas pelo `motor::renderizar_com`) |
+| Linha suavizada | curva (spline monótona, sem passar do valor real) por série, com tensão ajustável | Parcial (curva monótona por série pronta; tensão ajustável pendente) |
+| Área com gradiente | preenchimento que esmaece até transparente na base | Pronto (`GradienteArea`; gradiente nativo no SVG e faixas recortadas para o PDF) |
 | Gradiente na barra/fatia | linear ou radial por série e por ponto | Planejado |
 | Sombra suave | sombra projetada em barras, fatias e linhas | Planejado |
 | Vidro (translúcido) | preenchimento semitransparente com borda clara | Planejado |
@@ -612,7 +612,7 @@ combinável com qualquer tipo de gráfico em que faça sentido.
 | Pictograma | barras feitas de ícones repetidos (ícones do feather-shapes) | Planejado |
 | Rosca fina / anel de progresso | espessura do anel, cantos arredondados nas pontas | Planejado |
 | Marcadores estilizados | forma, tamanho, contorno, brilho, imagem ou ícone | Planejado |
-| Temas | claro, escuro, neon, pastel, corporativo, alto contraste, monocromático, daltônico; tema do usuário salvo | Planejado (hoje: paleta da suíte) |
+| Temas | claro, escuro, neon, pastel, corporativo, alto contraste, monocromático, daltônico; tema do usuário salvo | Parcial (14 temáticas de cor em `temas`; faltam daltônico e tema do usuário salvo) |
 
 ### 2.21 Vários gráficos juntos
 
@@ -634,7 +634,7 @@ pelo degraus simples).
 | Item | Prontos | Parciais | Planejados | Total |
 |---|---|---|---|---|
 | Tipos de gráfico (T01 a T97) | 7 | 17 | 73 | 97 |
-| Propriedades de personalização (seção 2) | 38 | 12 | 150 | 200 |
+| Propriedades de personalização (seção 2) | 42 | 18 | 162 | 222 |
 
 
 ---
@@ -824,6 +824,7 @@ desfaz se o novo valor for inválido.
 cargo test
 cargo clippy --all-targets
 cargo run --example cht018_25_tipos      # gera os 25 tipos do motor
+cargo run --example estilos -- /tmp/estilos   # galeria de estilos, temáticas, neon e filtro
 ```
 
 Regras para contribuir:

@@ -1,7 +1,7 @@
 //! Contrato único para as 25 opções legadas do chart.ts.
 //! Dados já extraídos/agregados: nenhum gráfico pode recalcular somas.
-use feather_draw::{exportar_svg, Cena};
-use crate::Serie;
+use feather_draw::{exportar_svg, Cena, Estilo, Figura, Ponto};
+use crate::{AparenciaGrafico, Serie};
 use super::tipos;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -121,6 +121,78 @@ pub fn renderizar(
         TipoGrafico::Gantt => tipos::gantt::desenhar(&mut cena, dados, area)?,
     }
     Ok(cena)
+}
+
+/// Como `renderizar`, com a aparência opcional: fundo, paleta, cantos
+/// arredondados e brilho em colunas/barras (inclusive empilhadas e 100%),
+/// suavização, gradiente e brilho em linhas e áreas. Os demais tipos
+/// (pizza, dispersão, combinado…) ignoram os campos de estilo e desenham
+/// como em `renderizar`. Com `AparenciaGrafico::default()` a cena é idêntica.
+pub fn renderizar_com(
+    tipo: TipoGrafico, dados: &Entrada, largura: f32, altura: f32, ap: &AparenciaGrafico,
+) -> Result<Cena, ErroMotor> {
+    use super::tipos::{barras as b, colunas as c, linhas as l};
+    ap.validar().map_err(|_| ErroMotor::ValorInvalido)?;
+    let area = super::primitivas::Area::nova(largura, altura);
+    let (colunas, barras, linhas) = (
+        match tipo {
+            TipoGrafico::Colunas => Some(c::Modo::Agrupado),
+            TipoGrafico::ColunasEmpilhadas => Some(c::Modo::Empilhado),
+            TipoGrafico::Colunas100 => Some(c::Modo::Percentual),
+            _ => None,
+        },
+        match tipo {
+            TipoGrafico::Barras => Some(b::Modo::Agrupado),
+            TipoGrafico::BarrasEmpilhadas => Some(b::Modo::Empilhado),
+            TipoGrafico::Barras100 => Some(b::Modo::Percentual),
+            _ => None,
+        },
+        match tipo {
+            TipoGrafico::Linhas => Some((l::Modo::Simples, false, false)),
+            TipoGrafico::Degraus => Some((l::Modo::Simples, true, false)),
+            TipoGrafico::DegrausEmpilhados => Some((l::Modo::Empilhado, true, false)),
+            TipoGrafico::Degraus100 => Some((l::Modo::Percentual, true, false)),
+            TipoGrafico::Area => Some((l::Modo::Simples, false, true)),
+            TipoGrafico::AreaDegraus => Some((l::Modo::Simples, true, true)),
+            TipoGrafico::AreaDegrausEmpilhada => Some((l::Modo::Empilhado, true, true)),
+            TipoGrafico::AreaDegraus100 => Some((l::Modo::Percentual, true, true)),
+            _ => None,
+        },
+    );
+    if colunas.is_none() && barras.is_none() && linhas.is_none() {
+        let mut cena = renderizar(tipo, dados, largura, altura)?;
+        if let Some(fundo) = ap.fundo {
+            cena.figuras.insert(0, figura_fundo(largura, altura, fundo));
+        }
+        return Ok(cena);
+    }
+    dados.validar()?;
+    if !largura.is_finite() || !altura.is_finite() || largura < 40.0 || altura < 40.0 {
+        return Err(ErroMotor::DimensoesInvalidas);
+    }
+    let mut cena = Cena::nova(largura, altura);
+    if let Some(fundo) = ap.fundo {
+        cena.adicionar(figura_fundo(largura, altura, fundo));
+    }
+    if let Some(m) = colunas {
+        c::desenhar_modo_ap(&mut cena, dados, area, m, ap);
+    } else if let Some(m) = barras {
+        b::desenhar_modo_ap(&mut cena, dados, area, m, ap);
+    } else if let Some((m, degraus, preencher)) = linhas {
+        l::desenhar_modo_ap(&mut cena, dados, area, m, degraus, preencher, ap);
+    }
+    Ok(cena)
+}
+
+fn figura_fundo(largura: f32, altura: f32, fundo: feather_draw::Cor) -> Figura {
+    Figura::Polilinha {
+        pontos: vec![
+            Ponto::novo(0.0, 0.0), Ponto::novo(largura, 0.0),
+            Ponto::novo(largura, altura), Ponto::novo(0.0, altura),
+        ],
+        fechada: true,
+        estilo: Estilo { preenchimento: Some(fundo), contorno: None, espessura: 0.0 },
+    }
 }
 
 pub fn renderizar_svg(

@@ -3,10 +3,11 @@
 //! A geometria continua em Grafico::cena e o texto é um overlay declarativo,
 //! independente da GUI. Exportadores SVG/PDF usam o mesmo layout e conteúdo.
 
-use crate::{ErroGrafico, Grafico, Tipo};
+use crate::filtro::{FiltroLegenda, ItemLegenda};
+use crate::{AparenciaGrafico, ErroGrafico, Grafico, Tipo, CORES_PIZZA};
 use feather_draw::{
     exportar_pdf_com_texto, exportar_svg, Cena, Cor, ErroPdf, ErroSvg,
-    Estilo, Figura, FontePdf, Retangulo, TextoPdf,
+    Estilo, Figura, FontePdf, Ponto, Retangulo, TextoPdf,
 };
 use std::fmt::Write;
 
@@ -168,6 +169,12 @@ fn abreviar(texto: &str, largura: f32, tamanho: f32) -> String {
     saida.push('…');
     saida
 }
+/// Mistura a cor com o fundo para indicar item desativado (resultado opaco,
+/// para SVG e PDF mostrarem igual).
+fn esmaecer(cor: Cor, fundo: Cor) -> Cor {
+    let mix = |a: u8, b: u8| (f32::from(a) * 0.35 + f32::from(b) * 0.65).round() as u8;
+    Cor::rgb(mix(cor.r, fundo.r), mix(cor.g, fundo.g), mix(cor.b, fundo.b))
+}
 fn escapar_svg(t: &str) -> String {
     let mut out = String::with_capacity(t.len());
     for c in t.chars() {
@@ -193,11 +200,40 @@ impl Grafico {
         altura: f32,
         config: &TipografiaGrafico,
     ) -> Result<CenaAnotada, ErroGrafico> {
+        self.cena_anotada_impl(
+            largura, altura, config, &AparenciaGrafico::default(), &FiltroLegenda::default(), false)
+    }
+
+    /// Como `cena_anotada`, mas com aparência (fundo, cores de texto, efeitos)
+    /// e filtro da legenda. Séries (ou fatias, na pizza) escondidas somem do
+    /// desenho, dos eixos e dos totais, e continuam na legenda, esmaecidas. Na
+    /// pizza a legenda lista as categorias, para que cada fatia possa ser filtrada.
+    pub fn cena_anotada_estilizada(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+    ) -> Result<CenaAnotada, ErroGrafico> {
+        self.cena_anotada_impl(largura, altura, config, aparencia, filtro, true)
+    }
+
+    fn cena_anotada_impl(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+        pizza_por_categoria: bool,
+    ) -> Result<CenaAnotada, ErroGrafico> {
         config.validar()?;
-        let mut cena = self.cena(largura, altura)?;
+        let (vis, mapa) = self.filtrado(filtro)?;
+        let mut cena = vis.cena_impl(largura, altura, None, aparencia, Some(&mapa))?;
         let mut rotulos = Vec::new();
         let fonte = config.tamanho;
-        let preto = Cor::rgb(32, 32, 32);
+        let preto = aparencia.cor_texto.unwrap_or(Cor::rgb(32, 32, 32));
         if largura < 90.0 || altura < 70.0 {
             return Ok(CenaAnotada { cena, rotulos });
         }
@@ -217,7 +253,7 @@ impl Grafico {
             }
         }
 
-        if let Some(eixos) = self.eixos(largura, altura)? {
+        if let Some(eixos) = vis.eixos_com_layout(largura, altura, &aparencia.layout)? {
             if config.mostrar_eixos {
                 let direito = eixos.area.x + eixos.area.largura;
                 let inferior = eixos.area.y + eixos.area.altura;
@@ -250,39 +286,32 @@ impl Grafico {
                         fonte, preto, AlinhamentoRotulo::Fim));
                 }
             }
-            if config.mostrar_valores && matches!(self.tipo, Tipo::Colunas | Tipo::Barras) {
-                let barras: Vec<_> = cena.figuras.iter().filter_map(|f| {
-                    if let Figura::Retangulo { area, .. } = f { Some(*area) } else { None }
-                }).collect();
+            if config.mostrar_valores && matches!(vis.tipo, Tipo::Colunas | Tipo::Barras) {
+                let barras = vis.retangulos_barras(largura, altura, &aparencia.layout)?;
                 // Labels densos precisam de layout collision-aware; até 30
                 // barras, usa a posição geométrica existente, sem recalcular
                 // agregações nem tocar nas séries originais.
                 if barras.len() <= 30 {
-                    for (i, area) in barras.iter().enumerate() {
-                        let serie_idx = i / self.categorias.len();
-                        let categoria_idx = i % self.categorias.len();
-                        if let Some(serie) = self.series.get(serie_idx) {
-                            if let Some(&valor) = serie.valores.get(categoria_idx) {
-                                let texto = config.formato.formatar(valor, config.localidade)?;
-                                let (x, y, align) = if self.tipo == Tipo::Colunas {
-                                    (area.x + area.largura * 0.5,
-                                        (area.y - 3.0).max(fonte),
-                                        AlinhamentoRotulo::Centro)
-                                } else {
-                                    (area.x + area.largura + 3.0,
-                                        area.y + area.altura * 0.75,
-                                        AlinhamentoRotulo::Inicio)
-                                };
-                                rotulos.push(rotulo(texto, x, y, fonte, preto, align));
-                            }
-                        }
+                    for (serie_idx, categoria_idx, area) in &barras {
+                        let valor = vis.series[*serie_idx].valores[*categoria_idx];
+                        let texto = config.formato.formatar(valor, config.localidade)?;
+                        let (x, y, align) = if vis.tipo == Tipo::Colunas {
+                            (area.x + area.largura * 0.5,
+                                (area.y - 3.0).max(fonte),
+                                AlinhamentoRotulo::Centro)
+                        } else {
+                            (area.x + area.largura + 3.0,
+                                area.y + area.altura * 0.75,
+                                AlinhamentoRotulo::Inicio)
+                        };
+                        rotulos.push(rotulo(texto, x, y, fonte, preto, align));
                     }
                 }
             }
         } else {
             // Pizza: usar as mesmas caixas calculadas por CHT-010 e usadas
             // pelos backends SVG/PDF legados. A ausência de espaço oculta texto.
-            for fatia in self.fatias_pizza(largura, altura)? {
+            for fatia in vis.fatias_pizza(largura, altura)? {
                 let Some(r) = fatia.rotulo else { continue };
                 let tamanho = fonte.min(r.area.altura)
                     .min(r.area.largura / r.texto.chars().count().max(1) as f32);
@@ -294,31 +323,106 @@ impl Grafico {
             }
         }
         if config.mostrar_legenda {
-            let mut x = largura * 0.12;
-            let mut y = altura * 0.925;
-            for serie in &self.series {
-                let texto = abreviar(&serie.nome, largura * 0.45, fonte);
-                if texto.is_empty() { continue; }
-                let espaco = fonte * 0.60 * texto.chars().count() as f32 + fonte * 2.3;
-                if x + espaco > largura * 0.96 {
-                    x = largura * 0.12;
-                    y += fonte * 1.4;
-                }
-                if y + fonte * 0.4 > altura { break; }
+            let fundo = aparencia.fundo.unwrap_or(Cor::rgb(255, 255, 255));
+            for item in self.itens_legenda_impl(largura, altura, config, aparencia, filtro, pizza_por_categoria) {
+                let (cor_marca, cor_texto) = if item.escondido {
+                    (esmaecer(item.cor, fundo), esmaecer(preto, fundo))
+                } else {
+                    (item.cor, preto)
+                };
                 cena.adicionar(Figura::Retangulo {
-                    area: Retangulo::novo(x, y - fonte * 0.75, fonte * 0.75, fonte * 0.75),
+                    area: item.marca,
                     estilo: Estilo {
-                        preenchimento: Some(serie.cor),
+                        preenchimento: Some(cor_marca),
                         contorno: None,
                         espessura: 0.0,
                     },
                 });
-                rotulos.push(rotulo(texto, x + fonte * 1.0, y, fonte, preto,
+                rotulos.push(rotulo(item.texto, item.x_texto, item.y_texto, fonte, cor_texto,
                     AlinhamentoRotulo::Inicio));
-                x += espaco;
             }
         }
         Ok(CenaAnotada { cena, rotulos })
+    }
+
+    /// Itens da legenda com posição e área clicável. Itens escondidos pelo
+    /// filtro continuam presentes (`escondido = true`). Pizza lista as categorias.
+    pub fn itens_legenda(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+    ) -> Vec<ItemLegenda> {
+        if !config.mostrar_legenda || largura < 90.0 || altura < 70.0 {
+            return Vec::new();
+        }
+        self.itens_legenda_impl(largura, altura, config, aparencia, filtro, true)
+    }
+
+    /// Qual item da legenda está sob o ponto (índice da série, ou da categoria
+    /// na pizza), se algum.
+    pub fn hit_test_legenda(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+        ponto: Ponto,
+    ) -> Option<usize> {
+        self.itens_legenda(largura, altura, config, aparencia, filtro)
+            .into_iter()
+            .find(|i| i.caixa.contem(ponto))
+            .map(|i| i.indice)
+    }
+
+    fn itens_legenda_impl(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+        pizza_por_categoria: bool,
+    ) -> Vec<ItemLegenda> {
+        let fonte = config.tamanho;
+        let entradas: Vec<(String, Cor)> = if self.tipo == Tipo::Pizza && pizza_por_categoria {
+            self.categorias.iter().enumerate()
+                .map(|(i, c)| (c.clone(), aparencia.cor_serie(i, CORES_PIZZA[i % CORES_PIZZA.len()])))
+                .collect()
+        } else {
+            self.series.iter().enumerate()
+                .map(|(i, s)| (s.nome.clone(), aparencia.cor_serie(i, s.cor)))
+                .collect()
+        };
+        let mut itens = Vec::new();
+        let mut x = largura * 0.12;
+        let mut y = altura * 0.925;
+        for (indice, (nome, cor)) in entradas.into_iter().enumerate() {
+            let texto = abreviar(&nome, largura * 0.45, fonte);
+            if texto.is_empty() { continue; }
+            let espaco = fonte * 0.60 * texto.chars().count() as f32 + fonte * 2.3;
+            if x + espaco > largura * 0.96 {
+                x = largura * 0.12;
+                y += fonte * 1.4;
+            }
+            if y + fonte * 0.4 > altura { break; }
+            itens.push(ItemLegenda {
+                indice,
+                nome,
+                cor,
+                escondido: filtro.esta_oculto(indice),
+                marca: Retangulo::novo(x, y - fonte * 0.75, fonte * 0.75, fonte * 0.75),
+                caixa: Retangulo::novo(x, y - fonte * 0.9, espaco, fonte * 1.3),
+                texto,
+                x_texto: x + fonte * 1.0,
+                y_texto: y,
+            });
+            x += espaco;
+        }
+        itens
     }
 
     /// Exportação opt-in: exportar_svg() legado permanece idêntico.
@@ -330,24 +434,21 @@ impl Grafico {
     ) -> Result<String, ErroExportacaoTipografica> {
         let layout = self.cena_anotada(largura, altura, config)
             .map_err(ErroExportacaoTipografica::Grafico)?;
-        let mut svg = exportar_svg(&layout.cena)
-            .map_err(ErroExportacaoTipografica::Svg)?;
-        let mut overlays = String::new();
-        for t in &layout.rotulos {
-            let ancora = match t.alinhamento {
-                AlinhamentoRotulo::Inicio => "start",
-                AlinhamentoRotulo::Centro => "middle",
-                AlinhamentoRotulo::Fim => "end",
-            };
-            writeln!(&mut overlays,
-                "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"sans-serif\" font-size=\"{:.3}\" text-anchor=\"{}\" fill=\"#{:02x}{:02x}{:02x}\">{}</text>",
-                t.x, t.y, t.tamanho, ancora, t.cor.r, t.cor.g, t.cor.b,
-                escapar_svg(&t.texto)).unwrap();
-        }
-        if let Some(pos) = svg.rfind("</svg>") {
-            svg.insert_str(pos, &overlays);
-        }
-        Ok(svg)
+        svg_da_cena_anotada(&layout)
+    }
+
+    /// SVG com aparência (fundo, temática, efeitos) e filtro da legenda.
+    pub fn exportar_svg_estilizado(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+    ) -> Result<String, ErroExportacaoTipografica> {
+        let layout = self.cena_anotada_estilizada(largura, altura, config, aparencia, filtro)
+            .map_err(ErroExportacaoTipografica::Grafico)?;
+        svg_da_cena_anotada(&layout)
     }
 
     /// Exportação opt-in PDF, reutilizando a mesma Cena e posições do SVG.
@@ -360,25 +461,71 @@ impl Grafico {
     ) -> Result<Vec<u8>, ErroExportacaoTipografica> {
         let layout = self.cena_anotada(largura, altura, config)
             .map_err(ErroExportacaoTipografica::Grafico)?;
-        let textos = layout.rotulos.iter().map(|t| {
-            let extensao = t.texto.chars().count() as f32 * t.tamanho * 0.55;
-            let x = match t.alinhamento {
-                AlinhamentoRotulo::Inicio => t.x,
-                AlinhamentoRotulo::Centro => t.x - extensao * 0.5,
-                AlinhamentoRotulo::Fim => t.x - extensao,
-            };
-            TextoPdf {
-                texto: t.texto.clone(),
-                x: x.max(0.0),
-                y: t.y,
-                tamanho: t.tamanho,
-                cor: t.cor,
-                fonte: FontePdf::Helvetica,
-            }
-        }).collect::<Vec<_>>();
-        exportar_pdf_com_texto(&layout.cena, &textos)
-            .map_err(ErroExportacaoTipografica::Pdf)
+        pdf_da_cena_anotada(&layout)
     }
+
+    /// PDF com aparência e filtro da legenda.
+    pub fn exportar_pdf_estilizado(
+        &self,
+        largura: f32,
+        altura: f32,
+        config: &TipografiaGrafico,
+        aparencia: &AparenciaGrafico,
+        filtro: &FiltroLegenda,
+    ) -> Result<Vec<u8>, ErroExportacaoTipografica> {
+        // O PDF não aceita gradiente com opacidade variável: usa faixas.
+        let mut ap = aparencia.clone();
+        if let Some(g) = &mut ap.gradiente_area {
+            if g.faixas == 0 {
+                g.faixas = 32;
+            }
+        }
+        let layout = self.cena_anotada_estilizada(largura, altura, config, &ap, filtro)
+            .map_err(ErroExportacaoTipografica::Grafico)?;
+        pdf_da_cena_anotada(&layout)
+    }
+}
+
+fn svg_da_cena_anotada(layout: &CenaAnotada) -> Result<String, ErroExportacaoTipografica> {
+    let mut svg = exportar_svg(&layout.cena)
+        .map_err(ErroExportacaoTipografica::Svg)?;
+    let mut overlays = String::new();
+    for t in &layout.rotulos {
+        let ancora = match t.alinhamento {
+            AlinhamentoRotulo::Inicio => "start",
+            AlinhamentoRotulo::Centro => "middle",
+            AlinhamentoRotulo::Fim => "end",
+        };
+        writeln!(&mut overlays,
+            "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"sans-serif\" font-size=\"{:.3}\" text-anchor=\"{}\" fill=\"#{:02x}{:02x}{:02x}\">{}</text>",
+            t.x, t.y, t.tamanho, ancora, t.cor.r, t.cor.g, t.cor.b,
+            escapar_svg(&t.texto)).unwrap();
+    }
+    if let Some(pos) = svg.rfind("</svg>") {
+        svg.insert_str(pos, &overlays);
+    }
+    Ok(svg)
+}
+
+fn pdf_da_cena_anotada(layout: &CenaAnotada) -> Result<Vec<u8>, ErroExportacaoTipografica> {
+    let textos = layout.rotulos.iter().map(|t| {
+        let extensao = t.texto.chars().count() as f32 * t.tamanho * 0.55;
+        let x = match t.alinhamento {
+            AlinhamentoRotulo::Inicio => t.x,
+            AlinhamentoRotulo::Centro => t.x - extensao * 0.5,
+            AlinhamentoRotulo::Fim => t.x - extensao,
+        };
+        TextoPdf {
+            texto: t.texto.clone(),
+            x: x.max(0.0),
+            y: t.y,
+            tamanho: t.tamanho,
+            cor: t.cor,
+            fonte: FontePdf::Helvetica,
+        }
+    }).collect::<Vec<_>>();
+    exportar_pdf_com_texto(&layout.cena, &textos)
+        .map_err(ErroExportacaoTipografica::Pdf)
 }
 
 #[cfg(test)]

@@ -1,12 +1,31 @@
 //! Colunas agrupadas/empilhadas; valores brutos imutáveis.
-use crate::motor::{core::Entrada, primitivas::{Area, rect}};
-use feather_draw::Cena;
+use crate::estilos::{brilho_barra, figura_barra, raios_cantos, PapelBarra};
+use crate::motor::{core::Entrada, primitivas::Area};
+use crate::AparenciaGrafico;
+use feather_draw::{Cena, Estilo, Retangulo};
 #[derive(Clone, Copy)]
 pub enum Modo { Agrupado, Empilhado, Percentual }
 pub fn desenhar(cena: &mut Cena, d: &Entrada, area: Area) {
     desenhar_modo(cena, d, area, Modo::Agrupado)
 }
 pub fn desenhar_modo(cena: &mut Cena, d: &Entrada, area: Area, modo: Modo) {
+    desenhar_modo_ap(cena, d, area, modo, &AparenciaGrafico::default())
+}
+/// Papel de cada série na pilha da categoria `i`, por sinal: (primeira, última)
+/// com valor não nulo. A última é a ponta; a primeira, a base.
+fn extremos_pilha(d: &Entrada, i: usize, positivo: bool) -> Option<(usize, usize)> {
+    let mut it = d.series.iter().enumerate().filter(|(_, s)| {
+        let v = s.valores[i];
+        if positivo { v > 0. } else { v < 0. }
+    }).map(|(j, _)| j);
+    let primeiro = it.next()?;
+    Some((primeiro, it.next_back().unwrap_or(primeiro)))
+}
+/// Igual a `desenhar_modo`, com cantos arredondados e brilho da aparência.
+/// Em empilhadas só o segmento da ponta (e, em `TopoEBase`, o da base) arredonda.
+pub fn desenhar_modo_ap(
+    cena: &mut Cena, d: &Entrada, area: Area, modo: Modo, ap: &AparenciaGrafico,
+) {
     let n = d.categorias.len();
     let grupo = area.w / n as f32;
     let faixa = (grupo * 0.72).min(96.);
@@ -56,7 +75,27 @@ pub fn desenhar_modo(cena: &mut Cena, d: &Entrada, area: Area, modo: Modo) {
             } else { faixa };
             let x = area.x + grupo * i as f32 + (grupo - faixa) * 0.5
                 + if matches!(modo, Modo::Agrupado) { largura * j as f32 } else { 0. };
-            rect(cena, x, y0.min(y1), largura * 0.93, (y0 - y1).abs(), s.cor);
+            let (w, h) = (largura * 0.93, (y0 - y1).abs());
+            if w <= 0. || h <= 0. { continue; }
+            let retangulo = Retangulo::novo(x, y0.min(y1), w, h);
+            let cor = ap.cor_serie(j, s.cor);
+            let positivo = s.valores[i] >= 0.;
+            let papel = if matches!(modo, Modo::Agrupado) {
+                PapelBarra::ISOLADA
+            } else {
+                match extremos_pilha(d, i, positivo) {
+                    Some((base, ponta)) => PapelBarra { base: j == base, ponta: j == ponta },
+                    None => PapelBarra::ISOLADA,
+                }
+            };
+            let raios = ap.arredondamento
+                .map_or([0.; 4], |ar| raios_cantos(retangulo, true, positivo, papel, &ar));
+            if let Some(neon) = &ap.neon {
+                brilho_barra(cena, retangulo, raios, ap.espessura_contorno.max(1.), cor, neon);
+            }
+            cena.adicionar(figura_barra(retangulo, raios, Estilo {
+                preenchimento: Some(cor), contorno: ap.contorno(), espessura: ap.espessura_contorno,
+            }));
         }
     }
 }

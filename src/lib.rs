@@ -2,6 +2,7 @@
 //! A Cena é independente de Iced/SVG/PDF; renderizadores desenham as mesmas
 //! formas. Análise avançada/agrupamento continua no motor de dados do Sheet.
 
+use estilos::{brilho_barra, desenhar_serie_linha, figura_barra, raios_cantos, SerieLinha};
 use feather_draw::{Cena, Cor, Estilo, EstiloVetor, Figura, Ponto, Retangulo};
 
 pub mod motor;
@@ -9,20 +10,35 @@ pub mod amostragem;
 pub mod contrato;
 pub mod aparencia;
 pub mod eixos;
+pub mod estilos;
+pub mod filtro;
 pub mod interacao;
 pub mod pdf;
 pub mod pizza;
 pub mod svg;
+pub mod temas;
 pub mod tipografia;
 pub use aparencia::{AparenciaGrafico, LayoutGrafico, Marcador};
 pub use contrato::{AmostraDados, ContratoGrafico, MetadadosSerie};
 pub use amostragem::{indices_lttb, ErroAmostragem};
+pub use estilos::{Arredondamento, CantosArredondados, GradienteArea, Neon, PapelBarra, RaioBarra, Suavizacao};
+pub use filtro::{FiltroLegenda, ItemLegenda};
+pub use temas::{aplicar_tema, temas, Tema};
 pub use eixos::{Eixos, EscalaLinear, Tick};
 pub use interacao::{AlvoGrafico, ErroInteracao, EventoGrafico, HitGrafico, InteracaoGrafico, MudancaInteracao, ViewportGrafico};
 pub use pdf::ErroPdfGrafico;
 pub use pizza::{FatiaPizza, RotuloPizza};
 pub use svg::ErroSvgGrafico;
 pub use tipografia::{AlinhamentoRotulo, CenaAnotada, ErroExportacaoTipografica, FormatoNumero, LocalidadeGrafico, RotuloGrafico, TipografiaGrafico};
+
+/// Cores das fatias quando nem a série nem a paleta definem.
+pub(crate) const CORES_PIZZA: [Cor; 5] = [
+    Cor::rgb(43, 122, 120),
+    Cor::rgb(11, 87, 208),
+    Cor::rgb(232, 113, 10),
+    Cor::rgb(24, 128, 56),
+    Cor::rgb(142, 36, 170),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tipo {
@@ -98,7 +114,7 @@ impl Grafico {
 
     /// Mantém a renderização original e todas as amostras para compatibilidade.
     pub fn cena(&self, largura: f32, altura: f32) -> Result<Cena, ErroGrafico> {
-        self.cena_impl(largura, altura, None, &AparenciaGrafico::default())
+        self.cena_impl(largura, altura, None, &AparenciaGrafico::default(), None)
     }
 
     /// Gera geometria com paleta, estilos, marcadores e margens configuráveis.
@@ -109,7 +125,7 @@ impl Grafico {
         altura: f32,
         aparencia: &AparenciaGrafico,
     ) -> Result<Cena, ErroGrafico> {
-        self.cena_impl(largura, altura, None, aparencia)
+        self.cena_impl(largura, altura, None, aparencia, None)
     }
 
     /// Reduz apenas os pontos visuais de linhas por LTTB.
@@ -124,7 +140,7 @@ impl Grafico {
         if max_pontos < 3 {
             return Err(ErroGrafico::ValorInvalido);
         }
-        self.cena_impl(largura, altura, Some(max_pontos), &AparenciaGrafico::default())
+        self.cena_impl(largura, altura, Some(max_pontos), &AparenciaGrafico::default(), None)
     }
 
     /// Amostragem visual sem alterar os dados, mantendo opções de aparência.
@@ -138,20 +154,94 @@ impl Grafico {
         if max_pontos < 3 {
             return Err(ErroGrafico::ValorInvalido);
         }
-        self.cena_impl(largura, altura, Some(max_pontos), aparencia)
+        self.cena_impl(largura, altura, Some(max_pontos), aparencia, None)
     }
 
+    /// Retângulos de colunas/barras na ordem série-maior, categoria-menor.
+    /// Fonte única da geometria para desenho, rótulos e hit-test.
+    pub(crate) fn retangulos_barras(
+        &self,
+        largura: f32,
+        altura: f32,
+        layout: &LayoutGrafico,
+    ) -> Result<Vec<(usize, usize, Retangulo)>, ErroGrafico> {
+        let eixos = self
+            .eixos_com_layout(largura, altura, layout)?
+            .ok_or(ErroGrafico::EixoInvalido)?;
+        let area_plot = eixos.area;
+        let (x0, y0, w, h) = (area_plot.x, area_plot.y, area_plot.largura, area_plot.altura);
+        let n = self.categorias.len();
+        let n_series = self.series.len();
+        let escala_valores = if self.tipo == Tipo::Barras {
+            eixos.escala_x.ok_or(ErroGrafico::EixoInvalido)?
+        } else {
+            eixos.escala_y.ok_or(ErroGrafico::EixoInvalido)?
+        };
+        let mapear_y = |v: f64| y0 + h * (1.0 - escala_valores.fracao(v));
+        let baseline = mapear_y(0.0);
+        let largura_grupo = w / n as f32;
+        // Mesmo com uma única categoria, a coluna não deve ocupar
+        // quase toda a área de plotagem. Limitar a faixa em pixels do
+        // SVG também preserva o visual ao reduzir o embed no Iced.
+        let faixa_grupo = (largura_grupo * 0.72).min(112.0);
+        let faixa = faixa_grupo / n_series as f32;
+        let mut saida = Vec::with_capacity(n * n_series);
+        for (s, serie) in self.series.iter().enumerate() {
+            for (i, valor) in serie.valores.iter().enumerate() {
+                let y = mapear_y(*valor);
+                let x = x0 + largura_grupo * i as f32 + (largura_grupo - faixa_grupo) / 2.0
+                    + faixa * s as f32;
+                let area = if self.tipo == Tipo::Colunas {
+                    Retangulo::novo(x, y.min(baseline), faixa * 0.94, (y - baseline).abs())
+                } else {
+                    // Barra horizontal: categorias no eixo Y.
+                    let f = escala_valores.fracao(*valor);
+                    let zero = escala_valores.fracao(0.0);
+                    let yb = y0
+                        + (h / n as f32) * (i as f32 + 0.09)
+                        + (h / n as f32) * 0.82 * s as f32 / n_series as f32;
+                    let px = x0 + w * f.min(zero);
+                    Retangulo::novo(
+                        px,
+                        yb,
+                        w * (f - zero).abs(),
+                        (h / n as f32) * 0.82 / n_series as f32 * 0.94,
+                    )
+                };
+                saida.push((s, i, area));
+            }
+        }
+        Ok(saida)
+    }
+
+    /// `mapa`: índice original de cada série (ou fatia, na pizza) quando o
+    /// gráfico foi filtrado; mantém as cores da paleta estáveis.
     fn cena_impl(
         &self,
         largura: f32,
         altura: f32,
         max_pontos: Option<usize>,
         aparencia: &AparenciaGrafico,
+        mapa: Option<&[usize]>,
     ) -> Result<Cena, ErroGrafico> {
         self.validar()?;
         aparencia.validar()?;
         let area_plot = aparencia.layout.area(largura, altura)?;
         let mut cena = Cena::nova(largura, altura);
+        let original = |i: usize| mapa.map_or(i, |m| m[i]);
+        if let Some(fundo) = aparencia.fundo {
+            // Polilinha fechada (e não Retangulo): `Retangulo` na cena é só dado.
+            cena.adicionar(Figura::Polilinha {
+                pontos: vec![
+                    Ponto::novo(0.0, 0.0),
+                    Ponto::novo(largura, 0.0),
+                    Ponto::novo(largura, altura),
+                    Ponto::novo(0.0, altura),
+                ],
+                fechada: true,
+                estilo: Estilo { preenchimento: Some(fundo), contorno: None, espessura: 0.0 },
+            });
+        }
         let x0 = area_plot.x;
         let y0 = area_plot.y;
         let w = area_plot.largura;
@@ -161,13 +251,7 @@ impl Grafico {
         if self.tipo == Tipo::Pizza {
             let centro = Ponto::novo(largura * 0.5, altura * 0.5);
             let raio = largura.min(altura) * 0.38;
-            let cores = [
-                Cor::rgb(43, 122, 120),
-                Cor::rgb(11, 87, 208),
-                Cor::rgb(232, 113, 10),
-                Cor::rgb(24, 128, 56),
-                Cor::rgb(142, 36, 170),
-            ];
+            let cores = CORES_PIZZA;
             for fatia in self.fatias_pizza(largura, altura)? {
                 let inicio = fatia.inicio as f32;
                 let fim = fatia.fim as f32;
@@ -184,14 +268,12 @@ impl Grafico {
                         centro.y + raio * a.sin(),
                     ));
                 }
+                let indice = original(fatia.indice);
                 cena.adicionar(Figura::Polilinha {
                     pontos,
                     fechada: true,
                     estilo: Estilo {
-                        preenchimento: Some(aparencia.cor_serie(
-                            fatia.indice,
-                            cores[fatia.indice % cores.len()],
-                        )),
+                        preenchimento: Some(aparencia.cor_serie(indice, cores[indice % cores.len()])),
                         contorno: aparencia.contorno(),
                         espessura: aparencia.espessura_contorno,
                     },
@@ -214,9 +296,26 @@ impl Grafico {
         let baseline = mapear_y(0.0);
         let eixo = Estilo {
             preenchimento: None,
-            contorno: Some(Cor::rgb(95, 99, 104)),
+            contorno: Some(aparencia.cor_eixos.unwrap_or(Cor::rgb(95, 99, 104))),
             espessura: 1.0,
         };
+        if let Some(cor_grade) = aparencia.cor_grade {
+            let grade = Estilo { preenchimento: None, contorno: Some(cor_grade), espessura: 1.0 };
+            // Grade do eixo de valores: vertical nas barras, horizontal nos demais.
+            let (ticks, vertical) = if self.tipo == Tipo::Barras {
+                (&eixos.ticks_x, true)
+            } else {
+                (&eixos.ticks_y, false)
+            };
+            for tick in ticks {
+                let pontos = if vertical {
+                    vec![Ponto::novo(tick.posicao, y0), Ponto::novo(tick.posicao, y0 + h)]
+                } else {
+                    vec![Ponto::novo(x0, tick.posicao), Ponto::novo(x0 + w, tick.posicao)]
+                };
+                cena.adicionar(Figura::Polilinha { pontos, fechada: false, estilo: grade.clone() });
+            }
+        }
         // Ticks como segmentos vetoriais; texto e formatação pertencem ao backend.
         for tick in &eixos.ticks_x {
             cena.adicionar(Figura::Polilinha {
@@ -266,46 +365,22 @@ impl Grafico {
 
         match self.tipo {
             Tipo::Colunas | Tipo::Barras => {
-                let n_series = self.series.len();
-                let largura_grupo = w / n as f32;
-                // Mesmo com uma única categoria, a coluna não deve ocupar
-                // quase toda a área de plotagem. Limitar a faixa em pixels do
-                // SVG também preserva o visual ao reduzir o embed no Iced.
-                let faixa_grupo = (largura_grupo * 0.72).min(112.0);
-                let faixa = faixa_grupo / n_series as f32;
-                for (s, serie) in self.series.iter().enumerate() {
+                let vertical = self.tipo == Tipo::Colunas;
+                for (s, i, area) in self.retangulos_barras(largura, altura, &aparencia.layout)? {
+                    let serie = &self.series[s];
+                    let cor = aparencia.cor_serie(original(s), serie.cor);
                     let estilo = Estilo {
-                        preenchimento: Some(aparencia.cor_serie(s, serie.cor)),
+                        preenchimento: Some(cor),
                         contorno: aparencia.contorno(),
                         espessura: aparencia.espessura_contorno,
                     };
-                    for (i, valor) in serie.valores.iter().enumerate() {
-                        let y = mapear_y(*valor);
-                        let x = x0 + largura_grupo * i as f32
-                            + (largura_grupo - faixa_grupo) / 2.0
-                            + faixa * s as f32;
-                        let area = if self.tipo == Tipo::Colunas {
-                            Retangulo::novo(x, y.min(baseline), faixa * 0.94, (y - baseline).abs())
-                        } else {
-                            // Barra horizontal: categorias no eixo Y.
-                            let f = escala_valores.fracao(*valor);
-                            let zero = escala_valores.fracao(0.0);
-                            let yb = y0
-                                + (h / n as f32) * (i as f32 + 0.09)
-                                + (h / n as f32) * 0.82 * s as f32 / n_series as f32;
-                            let px = x0 + w * f.min(zero);
-                            Retangulo::novo(
-                                px,
-                                yb,
-                                w * (f - zero).abs(),
-                                (h / n as f32) * 0.82 / n_series as f32 * 0.94,
-                            )
-                        };
-                        cena.adicionar(Figura::Retangulo {
-                            area,
-                            estilo: estilo.clone(),
-                        });
+                    let raios = aparencia.arredondamento.map_or([0.0; 4], |ar| {
+                        raios_cantos(area, vertical, serie.valores[i] >= 0.0, PapelBarra::ISOLADA, &ar)
+                    });
+                    if let Some(neon) = &aparencia.neon {
+                        brilho_barra(&mut cena, area, raios, aparencia.espessura_contorno.max(1.0), cor, neon);
                     }
+                    cena.adicionar(figura_barra(area, raios, estilo));
                 }
             }
             Tipo::Linhas | Tipo::Area | Tipo::Degraus | Tipo::Dispersao => {
@@ -356,7 +431,7 @@ impl Grafico {
                             })
                             .collect::<Vec<_>>()
                     };
-                    let cor = aparencia.cor_serie(indice_serie, serie.cor);
+                    let cor = aparencia.cor_serie(original(indice_serie), serie.cor);
                     if self.tipo != Tipo::Dispersao {
                         // Mantém os dados originais intactos. Apenas a geometria
                         // de Área e Degraus muda; a extração/agregação é da origem.
@@ -364,35 +439,49 @@ impl Grafico {
                         if com_marcadores {
                             adicionar_marcadores(&mut cena, &pontos, cor, self.tipo, aparencia);
                         }
-                        let (pontos, fechada, preenchimento) = match self.tipo {
-                            Tipo::Area => {
-                                // Fecha o polígono no zero REAL (inclusive com
-                                // dados negativos), sem transformar valores.
-                                let mut contorno = Vec::with_capacity(pontos.len() + 2);
-                                if let (Some(primeiro), Some(ultimo)) =
-                                    (pontos.first().copied(), pontos.last().copied())
-                                {
-                                    contorno.push(Ponto::novo(primeiro.x, baseline));
-                                    contorno.extend(pontos);
-                                    contorno.push(Ponto::novo(ultimo.x, baseline));
-                                }
-                                let alfa = ((f32::from(cor.a) * 0.35).round() as u8).max(1);
-                                (contorno, true, Some(Cor::rgba(cor.r, cor.g, cor.b, alfa)))
+                        let eh_area = self.tipo == Tipo::Area;
+                        let estilizada = aparencia.estiliza_linha(
+                            original(indice_serie), eh_area, self.tipo != Tipo::Degraus);
+                        let pontos = if self.tipo == Tipo::Degraus {
+                            let mut degraus =
+                                Vec::with_capacity(pontos.len().saturating_mul(2).saturating_sub(1));
+                            if let Some(primeiro) = pontos.first() {
+                                degraus.push(*primeiro);
                             }
-                            Tipo::Degraus => {
-                                let mut degraus =
-                                    Vec::with_capacity(pontos.len().saturating_mul(2).saturating_sub(1));
-                                if let Some(primeiro) = pontos.first() {
-                                    degraus.push(*primeiro);
-                                }
-                                for par in pontos.windows(2) {
-                                    degraus.push(Ponto::novo(par[1].x, par[0].y));
-                                    degraus.push(par[1]);
-                                }
-                                (degraus, false, None)
+                            for par in pontos.windows(2) {
+                                degraus.push(Ponto::novo(par[1].x, par[0].y));
+                                degraus.push(par[1]);
                             }
-                            Tipo::Linhas => (pontos, false, None),
-                            _ => unreachable!(),
+                            degraus
+                        } else {
+                            pontos
+                        };
+                        if estilizada {
+                            desenhar_serie_linha(&mut cena, &pontos, &SerieLinha {
+                                cor,
+                                indice_serie: original(indice_serie),
+                                baseline,
+                                area: eh_area,
+                                permite_suavizar: self.tipo != Tipo::Degraus,
+                                aparencia,
+                            });
+                            continue;
+                        }
+                        let (pontos, fechada, preenchimento) = if eh_area {
+                            // Fecha o polígono no zero REAL (inclusive com
+                            // dados negativos), sem transformar valores.
+                            let mut contorno = Vec::with_capacity(pontos.len() + 2);
+                            if let (Some(primeiro), Some(ultimo)) =
+                                (pontos.first().copied(), pontos.last().copied())
+                            {
+                                contorno.push(Ponto::novo(primeiro.x, baseline));
+                                contorno.extend(pontos);
+                                contorno.push(Ponto::novo(ultimo.x, baseline));
+                            }
+                            let alfa = ((f32::from(cor.a) * 0.35).round() as u8).max(1);
+                            (contorno, true, Some(Cor::rgba(cor.r, cor.g, cor.b, alfa)))
+                        } else {
+                            (pontos, false, None)
                         };
                         cena.adicionar(Figura::Polilinha {
                             pontos,

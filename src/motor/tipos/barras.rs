@@ -1,10 +1,25 @@
 //! Barras horizontais, agrupadas e empilhadas.
-use crate::motor::{core::Entrada, primitivas::{Area, rect}};
-use feather_draw::Cena;
+use crate::estilos::{brilho_barra, figura_barra, raios_cantos, PapelBarra};
+use crate::motor::{core::Entrada, primitivas::Area};
+use crate::AparenciaGrafico;
+use feather_draw::{Cena, Estilo, Retangulo};
 #[derive(Clone, Copy)]
 pub enum Modo { Agrupado, Empilhado, Percentual }
 pub fn desenhar(c: &mut Cena, d: &Entrada, a: Area) { desenhar_modo(c,d,a,Modo::Agrupado) }
 pub fn desenhar_modo(c: &mut Cena, d: &Entrada, a: Area, modo: Modo) {
+    desenhar_modo_ap(c, d, a, modo, &AparenciaGrafico::default())
+}
+/// Primeira e última série com valor não nulo do sinal na categoria `i`.
+fn extremos_pilha(d: &Entrada, i: usize, positivo: bool) -> Option<(usize, usize)> {
+    let mut it = d.series.iter().enumerate().filter(|(_, s)| {
+        let v = s.valores[i];
+        if positivo { v > 0. } else { v < 0. }
+    }).map(|(j, _)| j);
+    let primeiro = it.next()?;
+    Some((primeiro, it.next_back().unwrap_or(primeiro)))
+}
+/// Igual a `desenhar_modo`, com cantos arredondados e brilho da aparência.
+pub fn desenhar_modo_ap(c: &mut Cena, d: &Entrada, a: Area, modo: Modo, ap: &AparenciaGrafico) {
     let n = d.categorias.len();
     let faixa = a.h / n as f32;
     let (mut min, mut max) = (0_f64, 0_f64);
@@ -42,7 +57,27 @@ pub fn desenhar_modo(c: &mut Cena, d: &Entrada, a: Area, modo: Modo) {
             } else {faixa*0.72};
             let y=a.y+faixa*i as f32+faixa*0.14
                 +if matches!(modo,Modo::Agrupado){altura*j as f32}else{0.};
-            rect(c,x0.min(x1),y,(x1-x0).abs(),altura*0.93,s.cor);
+            let (w, h) = ((x1 - x0).abs(), altura * 0.93);
+            if w <= 0. || h <= 0. { continue; }
+            let retangulo = Retangulo::novo(x0.min(x1), y, w, h);
+            let cor = ap.cor_serie(j, s.cor);
+            let positivo = s.valores[i] >= 0.;
+            let papel = if matches!(modo, Modo::Agrupado) {
+                PapelBarra::ISOLADA
+            } else {
+                match extremos_pilha(d, i, positivo) {
+                    Some((base, ponta)) => PapelBarra { base: j == base, ponta: j == ponta },
+                    None => PapelBarra::ISOLADA,
+                }
+            };
+            let raios = ap.arredondamento
+                .map_or([0.; 4], |ar| raios_cantos(retangulo, false, positivo, papel, &ar));
+            if let Some(neon) = &ap.neon {
+                brilho_barra(c, retangulo, raios, ap.espessura_contorno.max(1.), cor, neon);
+            }
+            c.adicionar(figura_barra(retangulo, raios, Estilo {
+                preenchimento: Some(cor), contorno: ap.contorno(), espessura: ap.espessura_contorno,
+            }));
         }
     }
 }

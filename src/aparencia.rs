@@ -1,5 +1,6 @@
 //! Aparência declarativa dos gráficos: motor puro, sem Iced.
 use crate::{ErroGrafico, Tipo};
+use crate::estilos::{Arredondamento, GradienteArea, Neon, Suavizacao};
 use feather_draw::{Cor, Retangulo};
 
 /// Margens relativas ao tamanho da cena, para manter o layout proporcional.
@@ -71,6 +72,22 @@ pub struct AparenciaGrafico {
     pub marcador: Marcador,
     pub tamanho_marcador: f32,
     pub layout: LayoutGrafico,
+    /// Fundo da área inteira do gráfico; `None` deixa transparente (padrão).
+    pub fundo: Option<Cor>,
+    /// Cor dos textos (título, eixos, legenda); `None` mantém o cinza-escuro padrão.
+    pub cor_texto: Option<Cor>,
+    /// Linhas de grade do eixo de valores; `None` não desenha (padrão).
+    pub cor_grade: Option<Cor>,
+    /// Cor dos eixos e do zero; `None` mantém o cinza padrão.
+    pub cor_eixos: Option<Cor>,
+    /// Cantos arredondados em colunas e barras; `None` mantém retângulos.
+    pub arredondamento: Option<Arredondamento>,
+    /// Curva monótona nas linhas e áreas das séries escolhidas.
+    pub suavizacao: Suavizacao,
+    /// Preenchimento da área em gradiente vertical até a base.
+    pub gradiente_area: Option<GradienteArea>,
+    /// Brilho neon atrás de linhas, bordas de área e colunas/barras.
+    pub neon: Option<Neon>,
 }
 impl Default for AparenciaGrafico {
     fn default() -> Self {
@@ -83,6 +100,14 @@ impl Default for AparenciaGrafico {
             marcador: Marcador::Automatico,
             tamanho_marcador: 5.0,
             layout: LayoutGrafico::default(),
+            fundo: None,
+            cor_texto: None,
+            cor_grade: None,
+            cor_eixos: None,
+            arredondamento: None,
+            suavizacao: Suavizacao::Nenhuma,
+            gradiente_area: None,
+            neon: None,
         }
     }
 }
@@ -98,6 +123,15 @@ impl AparenciaGrafico {
             || self.tamanho_marcador <= 0.0
         {
             return Err(ErroGrafico::ValorInvalido);
+        }
+        if let Some(a) = &self.arredondamento {
+            a.validar()?;
+        }
+        if let Some(g) = &self.gradiente_area {
+            g.validar()?;
+        }
+        if let Some(n) = &self.neon {
+            n.validar()?;
         }
         Ok(())
     }

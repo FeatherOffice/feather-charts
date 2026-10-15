@@ -3,8 +3,8 @@
 //! O app Iced converte seus eventos em `EventoGrafico` e renderiza o retorno;
 //! aqui não há widgets, dependência de GUI nem alteração de serialização.
 
-use crate::{AparenciaGrafico, ErroGrafico, Grafico, Tipo};
-use feather_draw::{Figura, Ponto, Retangulo};
+use crate::{AparenciaGrafico, ErroGrafico, FiltroLegenda, Grafico, Tipo, TipografiaGrafico};
+use feather_draw::{Ponto, Retangulo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErroInteracao {
@@ -98,6 +98,8 @@ pub struct MudancaInteracao {
 pub struct InteracaoGrafico {
     pub hover: Option<AlvoGrafico>,
     pub selecionado: Option<AlvoGrafico>,
+    /// Itens da legenda escondidos (séries; fatias na pizza). Vazio = tudo visível.
+    pub filtro: FiltroLegenda,
 }
 
 /// Projeção ortogonal no segmento, evitando divisões por zero.
@@ -149,32 +151,25 @@ impl Grafico {
         }
         match self.tipo {
             Tipo::Colunas | Tipo::Barras => {
-                let cena = self.cena_estilizada(largura, altura, aparencia)?;
-                // No renderer atual apenas dados possuem Figura::Retangulo.
-                // Ordem: série-major, categoria-minor; último retângulo fica
+                // Ordem série-maior/categoria-menor; o último retângulo fica
                 // visualmente acima de qualquer anterior em caso de overlap.
-                let mut indice = self.series.len() * self.categorias.len();
-                for figura in cena.figuras.iter().rev() {
-                    if let Figura::Retangulo { area, .. } = figura {
-                        indice -= 1;
-                        let serie = indice / self.categorias.len();
-                        let categoria = indice % self.categorias.len();
-                        let exp = Retangulo::novo(
-                            area.x - tolerancia,
-                            area.y - tolerancia,
-                            area.largura + 2.0 * tolerancia,
-                            area.altura + 2.0 * tolerancia,
+                let barras = self.retangulos_barras(largura, altura, &aparencia.layout)?;
+                for (serie, categoria, area) in barras.iter().rev() {
+                    let exp = Retangulo::novo(
+                        area.x - tolerancia,
+                        area.y - tolerancia,
+                        area.largura + 2.0 * tolerancia,
+                        area.altura + 2.0 * tolerancia,
+                    );
+                    if exp.contem(ponto) {
+                        let centro = Ponto::novo(
+                            area.x + area.largura / 2.0,
+                            area.y + area.altura / 2.0,
                         );
-                        if exp.contem(ponto) {
-                            let centro = Ponto::novo(
-                                area.x + area.largura / 2.0,
-                                area.y + area.altura / 2.0,
-                            );
-                            return Ok(Some(HitGrafico {
-                                alvo: self.alvo(serie, categoria),
-                                distancia: distancia(ponto, centro),
-                            }));
-                        }
+                        return Ok(Some(HitGrafico {
+                            alvo: self.alvo(*serie, *categoria),
+                            distancia: distancia(ponto, centro),
+                        }));
                     }
                 }
                 Ok(None)
@@ -183,7 +178,8 @@ impl Grafico {
                 let cena = self.cena_estilizada(largura, altura, aparencia)?;
                 let fatias = self.fatias_pizza(largura, altura)?;
                 // Fatias zero nunca geram Figura, índices originais preservados.
-                for (figura, fatia) in cena.figuras.iter().zip(fatias.iter()).rev() {
+                let pular = usize::from(aparencia.fundo.is_some());
+                for (figura, fatia) in cena.figuras.iter().skip(pular).zip(fatias.iter()).rev() {
                     if figura.atinge(ponto, tolerancia) {
                         return Ok(Some(HitGrafico {
                             alvo: self.alvo(0, fatia.indice), distancia: 0.0,
@@ -267,6 +263,28 @@ impl Grafico {
         }
     }
 
+    /// Como `hit_test_dados`, ignorando os itens escondidos pelo filtro da
+    /// legenda. Os índices do alvo são os do gráfico original.
+    pub fn hit_test_dados_filtrado(
+        &self, largura: f32, altura: f32, ponto: Ponto,
+        tolerancia: f32, aparencia: &AparenciaGrafico, filtro: &FiltroLegenda,
+    ) -> Result<Option<HitGrafico>, ErroInteracao> {
+        if !filtro.filtrando() {
+            return self.hit_test_dados(largura, altura, ponto, tolerancia, aparencia);
+        }
+        self.validar()?;
+        let (g, mapa) = self.filtrado(filtro)?;
+        let hit = g.hit_test_dados(largura, altura, ponto, tolerancia, aparencia)?;
+        Ok(hit.map(|mut h| {
+            if self.tipo == Tipo::Pizza {
+                h.alvo.categoria = mapa[h.alvo.categoria];
+            } else {
+                h.alvo.serie = mapa[h.alvo.serie];
+            }
+            h
+        }))
+    }
+
     /// Edição atômica de uma amostra pelo par (série, categoria).
     /// Regras de pizza e tipos numéricos são revalidadas sem alterar o resto.
     pub fn editar_valor(
@@ -301,8 +319,8 @@ impl InteracaoGrafico {
             EventoGrafico::Mover(tela) | EventoGrafico::Clicar(tela) => {
                 let ponto = viewport.converter(tela, largura_cena, altura_cena)?;
                 let novo = if let Some(ponto) = ponto {
-                    grafico.hit_test_dados(largura_cena, altura_cena, ponto,
-                        tolerancia, aparencia)?.map(|h| h.alvo)
+                    grafico.hit_test_dados_filtrado(largura_cena, altura_cena, ponto,
+                        tolerancia, aparencia, &self.filtro)?.map(|h| h.alvo)
                 } else { None };
                 self.hover = novo.clone();
                 if matches!(evento, EventoGrafico::Clicar(_)) {
@@ -316,6 +334,38 @@ impl InteracaoGrafico {
             hover: self.hover != hover_antigo,
             selecao: self.selecionado != selecao_antiga,
         })
+    }
+
+    /// Clique na legenda. Sem `ctrl` alterna o item; com `ctrl` mostra só ele
+    /// (repetir devolve tudo). Devolve o item acertado (índice da série, ou da
+    /// categoria na pizza) ou `None` se o ponto não caiu em nenhum. Hover e
+    /// seleção de itens que sumiram são limpos.
+    #[allow(clippy::too_many_arguments)]
+    pub fn clicar_legenda(
+        &mut self, grafico: &Grafico, largura: f32, altura: f32,
+        config: &TipografiaGrafico, aparencia: &AparenciaGrafico,
+        ponto: Ponto, ctrl: bool,
+    ) -> Result<Option<usize>, ErroInteracao> {
+        grafico.validar()?;
+        let Some(item) = grafico.hit_test_legenda(
+            largura, altura, config, aparencia, &self.filtro, ponto) else { return Ok(None) };
+        let total = grafico.total_itens_legenda();
+        if ctrl {
+            self.filtro.mostrar_so(item, total);
+        } else {
+            self.filtro.alternar(item, total);
+        }
+        let sumiu = |a: &AlvoGrafico| {
+            self.filtro.esta_oculto(if grafico.tipo == Tipo::Pizza { a.categoria } else { a.serie })
+        };
+        if self.hover.as_ref().is_some_and(sumiu) { self.hover = None; }
+        if self.selecionado.as_ref().is_some_and(sumiu) { self.selecionado = None; }
+        Ok(Some(item))
+    }
+
+    /// Duplo clique (ou botão "limpar filtro"): volta a mostrar tudo.
+    pub fn limpar_filtro(&mut self) {
+        self.filtro.mostrar_todos();
     }
 
     /// Valida identidade/valor antes de editar. Não cria histórico: o
@@ -346,7 +396,7 @@ impl InteracaoGrafico {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use feather_draw::Cor;
+    use feather_draw::{Cor, Figura};
 
     fn chart(tipo: Tipo) -> Grafico {
         Grafico {
@@ -444,7 +494,7 @@ mod testes {
         let mut g = chart(Tipo::Pizza);
         g.series.truncate(1);
         let mut estado = InteracaoGrafico {
-            hover: None, selecionado: Some(g.alvo(0, 0)),
+            hover: None, selecionado: Some(g.alvo(0, 0)), ..Default::default()
         };
         assert_eq!(estado.editar_selecionado(&mut g, -1.0),
             Err(ErroInteracao::Grafico(ErroGrafico::ValorInvalido)));
@@ -460,7 +510,8 @@ mod testes {
     #[test]
     fn edicao_rejeita_selecao_obsoleta_e_indices_invalidos() {
         let mut g = chart(Tipo::Barras);
-        let mut estado = InteracaoGrafico { hover: None, selecionado: Some(g.alvo(1, 2)) };
+        let mut estado = InteracaoGrafico {
+            hover: None, selecionado: Some(g.alvo(1, 2)), ..Default::default() };
         g.series[1].valores[2] = 100.0;
         assert_eq!(estado.editar_selecionado(&mut g, 90.0), Err(ErroInteracao::SelecaoObsoleta));
         assert_eq!(g.series[1].valores[2], 100.0);

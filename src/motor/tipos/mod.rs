@@ -1,0 +1,26 @@
+//! Cada variante de chart.ts tem entrada modular própria (máximo 500 linhas).
+pub mod colunas;
+pub mod colunas_empilhadas;
+pub mod colunas_100;
+pub mod barras;
+pub mod barras_empilhadas;
+pub mod barras_100;
+pub mod linhas;
+pub mod linha_3d;
+pub mod degraus;
+pub mod degraus_empilhados;
+pub mod degraus_100;
+pub mod area;
+pub mod area_degraus;
+pub mod area_degraus_empilhada;
+pub mod area_degraus_100;
+pub mod pizza;
+pub mod dispersao;
+pub mod bolhas;
+pub mod combinado;
+pub mod mapa_calor;
+pub mod cascata;
+pub mod histograma;
+pub mod radar;
+pub mod candlestick;
+pub mod gantt;

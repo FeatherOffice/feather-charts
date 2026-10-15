@@ -590,6 +590,40 @@ FeatherSlide.
 | Camadas no SVG | grupos nomeados (`<g id="serie-1">`) para edição externa | Planejado |
 | Metadados | título, autor, descrição no SVG/PDF | Planejado |
 
+### 2.20 Estilos visuais prontos e efeitos
+
+Pedido do usuário (14/10/2026): além de cada propriedade solta, o gráfico tem
+que ter **estilos prontos de um clique**, todos editáveis depois, e cada efeito
+combinável com qualquer tipo de gráfico em que faça sentido.
+
+| Estilo ou efeito | Como fica | Estado |
+|---|---|---|
+| Neon | linhas e bordas com brilho (glow) colorido sobre fundo escuro; espessura e intensidade do brilho ajustáveis | Planejado |
+| Barras e colunas arredondadas | raio no topo, nos dois lados ou em todos os cantos; raio em px ou % da largura | Planejado |
+| Linha suavizada | curva (spline monótona, sem passar do valor real) por série, com tensão ajustável | Planejado |
+| Área com gradiente | preenchimento que esmaece até transparente na base | Planejado |
+| Gradiente na barra/fatia | linear ou radial por série e por ponto | Planejado |
+| Sombra suave | sombra projetada em barras, fatias e linhas | Planejado |
+| Vidro (translúcido) | preenchimento semitransparente com borda clara | Planejado |
+| Minimalista | sem grade, sem eixos pesados, rótulos direto na série | Planejado |
+| Traço à mão (esboço) | contornos irregulares, aspecto de rascunho | Planejado |
+| Pictograma | barras feitas de ícones repetidos (ícones do feather-shapes) | Planejado |
+| Rosca fina / anel de progresso | espessura do anel, cantos arredondados nas pontas | Planejado |
+| Marcadores estilizados | forma, tamanho, contorno, brilho, imagem ou ícone | Planejado |
+| Temas | claro, escuro, neon, pastel, corporativo, alto contraste, monocromático, daltônico; tema do usuário salvo | Planejado (hoje: paleta da suíte) |
+
+### 2.21 Vários gráficos juntos
+
+| Recurso | Como fica | Estado |
+|---|---|---|
+| Combinado no mesmo eixo | cada série com o próprio tipo (coluna + linha + área…) | Parcial (geometria do combinado) |
+| Eixo secundário | séries à direita com escala própria | Planejado |
+| Sobrepostos | dois gráficos completos um sobre o outro, com transparência | Planejado |
+| Painel (dashboard) | vários gráficos numa grade, com título geral e legenda compartilhada | Planejado |
+| Quadros pequenos (small multiples) | o mesmo gráfico repetido por categoria, escalas iguais | Planejado |
+| Gráfico dentro de gráfico | miniatura de detalhe/ampliação num canto | Planejado |
+| Interação sincronizada | cursor, seleção e zoom compartilhados entre os gráficos do painel | Planejado |
+
 #### Resumo de contagens
 
 Contagem feita sobre as tabelas desta página (a linha T24 conta como pronta

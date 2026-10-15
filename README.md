@@ -511,6 +511,8 @@ Eixo X (categorias ou valores), Y (valores), Y secundário, X secundário e Z
 | Modelo de gráfico salvo pelo usuário | exportar/importar todas as propriedades (formato `.fchart`, TOML/JSON) e aplicar a outro gráfico | Planejado |
 | Definir como padrão | modelo padrão para novos gráficos | Planejado |
 | Herdar tema do documento/slide | cores do tema do Docs e do Slide | Planejado |
+| Temáticas de cores | conjuntos nomeados que trocam todas as cores do gráfico de uma vez (fundo, séries, grade, texto): Oceano, Floresta, Pôr do sol, Terra, Neon, Pastel, Outono, Inverno, Café, Monocromático azul/verde/cinza, Corporativo, Alto contraste; escolha com prévia ao passar o mouse; temática do usuário salva | Planejado |
+| Cor por regra | cor do ponto conforme o valor (acima da meta verde, abaixo vermelho; escala de cor contínua) | Planejado |
 | Contraste mínimo | aviso quando texto/fundo não atinge 4,5:1 | Planejado |
 
 ### 2.14 Animação (FeatherSlide)
@@ -538,7 +540,9 @@ FeatherSlide.
 | Zoom e rolagem em séries longas | janela de dados, roda do mouse, arrastar, mini-mapa | Planejado |
 | Seleção por retângulo (brush) | filtra os pontos | Planejado |
 | Cursor cruzado (crosshair) | linhas vertical e horizontal | Planejado |
-| Clique na legenda | alternar série | Planejado |
+| Filtro interativo pela legenda | clicar num item da legenda esconde/mostra aquela série ou categoria (pizza: a fatia); eixos e totais se recalculam na hora; Ctrl+clique mostra só aquele item; duplo clique volta tudo; o item filtrado fica esmaecido na legenda | Planejado |
+| Filtro interativo pelos dados | clicar numa barra/fatia/ponto filtra os outros gráficos do mesmo painel por aquela categoria (filtro cruzado) | Planejado |
+| Lembrar o filtro | o estado do filtro é guardado com o gráfico no arquivo e pode ser limpo com um botão | Planejado |
 | Clique no elemento | evento para o app abrir o diálogo de formatar | Planejado |
 | Arrastar elementos | título, legenda, rótulos | Planejado |
 

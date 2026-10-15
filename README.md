@@ -8,16 +8,14 @@ e a mesma exportação.
 É uma **biblioteca**, não um aplicativo e **não tem interface Iced**: cada
 aplicativo desenha o resultado do jeito que sabe. A `feather-charts` recebe
 dados já prontos, calcula a geometria e entrega uma `Cena` do
-[`feather-draw`](https://github.com/FeatherOffice/feather-draw) (hoje ainda
-chamado `featheroffice-drawing`), que sai em **tela**, **SVG** e **PDF** a partir
+[`feather-draw`](https://github.com/FeatherOffice/feather-draw), que sai em **tela**, **SVG** e **PDF** a partir
 das mesmas formas.
 
 > **Estado do documento.** Este README é a **especificação de suporte**: lista
 > todos os gráficos e todas as formas de personalização que a biblioteca vai
 > ter. A meta é **100% personalizável**: nada de aparência fixa dentro do
-> motor. Cada item traz o estado real no código de hoje, que ainda vive em
-> `featheroffice/crates/featheroffice-charts` no monorepo FeatherOffice e será
-> extraído para este repositório sob o nome `feather-charts`.
+> motor. Cada item traz o estado real do código deste repositório (extraído
+> em 14/10/2026 do monorepo FeatherOffice, onde se chamava `featheroffice-charts`).
 >
 > | Marca | Significado |
 > |---|---|

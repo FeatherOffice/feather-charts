@@ -1,6 +1,6 @@
 [package]
 name = "feather-charts"
-version = "0.2.0"
+version = "0.3.0"
 description = "Motor de gráficos da suíte FeatherOffice: dados, geometria, eixos, 25 tipos de gráfico, estilos visuais e temáticas, interação e saída em cena vetorial, SVG e PDF"
 authors = ["FeatherOffice"]
 edition = "2021"
@@ -11,3 +11,5 @@ publish = false
 
 [dependencies]
 feather-draw = { git = "https://github.com/FeatherOffice/feather-draw", tag = "v0.1.1" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

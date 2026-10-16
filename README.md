@@ -22,6 +22,14 @@ das mesmas formas.
 > | Pronto | existe no código atual e tem teste |
 > | Parcial | a geometria básica existe, faltam eixos, rótulos, estilo ou integração |
 > | Planejado | ainda não existe |
+>
+> **Oficial desde 15/10/2026:** este repositório é a versão oficial do motor de
+> gráficos da suíte. A cópia `featheroffice-charts` do monorepo deixou de
+> evoluir; o que ela ganhou depois da extração veio para cá: o modelo de estilo
+> serializável do painel "Formatar gráfico" (`estilo`: `EstiloGrafico`, 10
+> temas em `estilo::temas()`) e o desenho formatado (`formatado`), além do
+> título e da legenda que não pisam nos rótulos do eixo (`layout_anotado`).
+> FeatherSheet, FeatherDocs, FeatherSlide e FeatherPDF dependem daqui.
 
 ## Por que existe
 
@@ -150,8 +158,8 @@ Legenda da última coluna (**OOXML**): como o tipo é gravado em `.xlsx`,
 | Id | Gráfico (pt-BR) | Inglês | Variantes | Estado | OOXML |
 |---|---|---|---|---|---|
 | T36 | Pizza | Pie | rótulos com texto reduzido, fatias nulas sem área, valores muito grandes | Pronto | nativo `c:pieChart` |
-| T37 | Rosca | Doughnut | furo configurável, várias anéis (uma série por anel), texto no centro | Planejado | nativo `c:doughnutChart` |
-| T38 | Pizza explodida | Exploded pie | fatia afastada, todas ou uma só | Planejado | nativo (`c:explosion`) |
+| T37 | Rosca | Doughnut | furo configurável, várias anéis (uma série por anel), texto no centro | Parcial (furo pela `EstiloPizza::espessura_anel`; um anel só, sem texto no centro) | nativo `c:doughnutChart` |
+| T38 | Pizza explodida | Exploded pie | fatia afastada, todas ou uma só | Pronto (`EstiloPizza::explodir` por fatia e `explodir_todas`) | nativo (`c:explosion`) |
 | T39 | Pizza 3D | 3-D pie | inclinação e rotação | Planejado | nativo `c:pie3DChart` |
 | T40 | Pizza de pizza | Pie of pie | fatias pequenas viram uma segunda pizza | Planejado | nativo `c:ofPieChart` (`ofPieType=pie`) |
 | T41 | Barra de pizza | Bar of pie | fatias pequenas viram uma barra empilhada | Planejado | nativo `c:ofPieChart` (`ofPieType=bar`) |

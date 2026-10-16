@@ -2,13 +2,14 @@
 //! de área e brilho neon. Tudo é desligado por padrão (`AparenciaGrafico::default`
 //! reproduz o desenho anterior). A saída continua sendo `feather_draw::Cena`.
 use crate::{AparenciaGrafico, ErroGrafico};
+use serde::{Deserialize, Serialize};
 use feather_draw::{
     Caminho, Cena, Comando, Cor, Estilo, EstiloVetor, Extremo, Figura, Juncao, Parada, Ponto,
     Preenchimento, Retangulo, Stroke,
 };
 
 /// Raio dos cantos de uma barra ou coluna.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum RaioBarra {
     /// Raio fixo, em unidades da cena.
     Pixels(f32),
@@ -18,7 +19,7 @@ pub enum RaioBarra {
 }
 
 /// Quais cantos arredondam.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CantosArredondados {
     /// Só a ponta (lado do valor). Em barras empilhadas, só o segmento da ponta.
     Topo,
@@ -28,7 +29,7 @@ pub enum CantosArredondados {
     Todos,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Arredondamento {
     pub raio: RaioBarra,
     pub onde: CantosArredondados,
@@ -152,7 +153,7 @@ pub fn figura_barra(area: Retangulo, raios: [f32; 4], estilo: Estilo) -> Figura 
 // ---------------------------------------------------------------- suavização
 
 /// Quais séries usam curva suave.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum Suavizacao {
     #[default]
     Nenhuma,
@@ -239,7 +240,8 @@ pub fn comandos_linha(pontos: &[Ponto], suave: bool) -> Vec<Comando> {
 
 /// Preenchimento vertical da área: da opacidade inicial (junto à série) até a
 /// final (junto à linha de base). Multiplica o alfa da cor da série.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GradienteArea {
     pub opacidade_inicial: f32,
     pub opacidade_final: f32,
@@ -287,7 +289,8 @@ impl GradienteArea {
 
 /// Brilho: a mesma geometria desenhada `camadas` vezes mais grossa e quase
 /// transparente antes do traço normal.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Neon {
     /// 0 a 1; opacidade total do brilho.
     pub intensidade: f32,
@@ -381,6 +384,7 @@ impl AparenciaGrafico {
         (permite_suavizar && self.suavizacao.inclui(indice_serie))
             || (area && self.gradiente_area.is_some())
             || self.neon.is_some()
+            || self.serie_personalizada(indice_serie)
     }
 }
 
@@ -447,12 +451,19 @@ pub fn desenhar_serie_linha(cena: &mut Cena, pontos: &[Ponto], s: &SerieLinha) {
             });
         }
     }
+    let espessura = ap.espessura_da_serie(s.indice_serie);
     if let Some(neon) = &ap.neon {
-        brilho_caminho(cena, &linha, ap.espessura_linha, s.cor, neon);
+        brilho_caminho(cena, &linha, espessura, s.cor, neon);
+    }
+    let mut estilo = estilo_traco(s.cor, espessura);
+    let traco = ap.traco_da_serie(s.indice_serie);
+    if let Some(st) = estilo.stroke.as_mut().filter(|_| traco != crate::personalizacao::TracoLinha::Continuo) {
+        st.dash = traco.padrao(espessura);
+        st.extremo = Extremo::Plano;
     }
     cena.adicionar(Figura::Caminho {
         caminho: Caminho { comandos: linha, ..Caminho::novo() },
-        estilo: estilo_traco(s.cor, ap.espessura_linha),
+        estilo,
     });
 }
 

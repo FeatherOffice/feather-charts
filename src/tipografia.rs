@@ -4,20 +4,24 @@
 //! independente da GUI. Exportadores SVG/PDF usam o mesmo layout e conteúdo.
 
 use crate::filtro::{FiltroLegenda, ItemLegenda};
-use crate::{AparenciaGrafico, ErroGrafico, Grafico, Tipo, CORES_PIZZA};
+use crate::moldura::{largura_item_legenda, quebrar_legenda, texto_tick, Composicao, Moldura};
+use crate::personalizacao::RotacaoRotulos;
+use crate::quadro::{AlinhamentoTitulo, PosicaoLegenda};
+use crate::{AparenciaGrafico, ErroGrafico, Grafico, LayoutGrafico, Tipo};
 use feather_draw::{
     exportar_pdf_com_texto, exportar_svg, Cena, Cor, ErroPdf, ErroSvg,
     Estilo, Figura, FontePdf, Ponto, Retangulo, TextoPdf,
 };
+use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalidadeGrafico {
     PtBr,
     EnUs,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FormatoNumero {
     Decimal(u8),
     Moeda(u8),
@@ -96,6 +100,10 @@ pub struct RotuloGrafico {
     pub tamanho: f32,
     pub cor: Cor,
     pub alinhamento: AlinhamentoRotulo,
+    pub negrito: bool,
+    /// Giro em graus, sentido anti-horário, em torno de (x, y): 90 escreve de
+    /// baixo para cima. O PDF do `feather-draw` não gira texto: lá sai reto.
+    pub rotacao: f32,
 }
 
 /// Anotações separadas das formas, para serem consumidas por Iced ou PDF/SVG.
@@ -105,7 +113,8 @@ pub struct CenaAnotada {
     pub rotulos: Vec<RotuloGrafico>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TipografiaGrafico {
     pub subtitulo: String,
     pub unidade: String,
@@ -157,7 +166,7 @@ pub enum ErroExportacaoTipografica {
 }
 
 fn rotulo(texto: String, x: f32, y: f32, tamanho: f32, cor: Cor, alinhamento: AlinhamentoRotulo) -> RotuloGrafico {
-    RotuloGrafico { texto, x, y, tamanho, cor, alinhamento }
+    RotuloGrafico { texto, x, y, tamanho, cor, alinhamento, negrito: false, rotacao: 0.0 }
 }
 fn abreviar(texto: &str, largura: f32, tamanho: f32) -> String {
     let maximo = if largura <= 0.0 || tamanho <= 0.0 { 0 }
@@ -192,6 +201,50 @@ fn escapar_svg(t: &str) -> String {
 }
 
 impl Grafico {
+    /// Linhas de base do título e do subtítulo no layout antigo (nunca cortados em cima).
+    fn bases_do_titulo(altura: f32, fonte: f32) -> (f32, f32) {
+        let titulo = (altura * 0.048).max(fonte * 1.4 * 0.95);
+        (titulo, (altura * 0.087).max(titulo + fonte * 1.2))
+    }
+
+    /// A área do gráfico da cena anotada no layout antigo: título e subtítulo em
+    /// cima, rótulos do eixo X e legenda embaixo ficam fora dela, para não pisarem
+    /// no desenho nem um no outro (gráfico baixo ou letra grande). Com folga, é o
+    /// layout padrão.
+    pub fn layout_anotado(&self, _largura: f32, altura: f32, config: &TipografiaGrafico) -> LayoutGrafico {
+        let padrao = LayoutGrafico::default();
+        if self.tipo == Tipo::Pizza || altura <= 0.0 {
+            return padrao;
+        }
+        let fonte = config.tamanho;
+        let (base_titulo, base_subtitulo) = Self::bases_do_titulo(altura, fonte);
+        let topo = if !config.subtitulo.is_empty() {
+            base_subtitulo + fonte * 0.6
+        } else if config.mostrar_titulo && !self.titulo.is_empty() {
+            base_titulo + fonte * 0.6
+        } else {
+            0.0
+        };
+        let eixo = if config.mostrar_eixos { fonte * 1.75 } else { 0.0 };
+        let legenda = if config.mostrar_legenda { fonte * 1.7 } else { 0.0 };
+        let l = LayoutGrafico {
+            superior: padrao.superior.max(topo / altura),
+            inferior: padrao.inferior.max((eixo + legenda + fonte * 0.3) / altura),
+            ..padrao
+        };
+        if l.superior + l.inferior < 0.8 { l } else { padrao }
+    }
+
+    /// Aparência efetiva da cena anotada: no layout antigo com as margens padrão,
+    /// as margens de `layout_anotado`; nos demais casos, a própria.
+    fn aparencia_anotada<'a>(&self, largura: f32, altura: f32, config: &TipografiaGrafico, ap: &'a AparenciaGrafico) -> std::borrow::Cow<'a, AparenciaGrafico> {
+        if !ap.usa_moldura() && ap.layout == LayoutGrafico::default() {
+            std::borrow::Cow::Owned(AparenciaGrafico { layout: self.layout_anotado(largura, altura, config), ..ap.clone() })
+        } else {
+            std::borrow::Cow::Borrowed(ap)
+        }
+    }
+
     /// Composição tipográfica sem mudar Grafico/Serie ou persistência nativa.
     /// Os eixos conservam as posições retornadas pelo motor CHT-006.
     pub fn cena_anotada(
@@ -229,8 +282,12 @@ impl Grafico {
         pizza_por_categoria: bool,
     ) -> Result<CenaAnotada, ErroGrafico> {
         config.validar()?;
+        let aparencia = &*self.aparencia_anotada(largura, altura, config, aparencia);
         let (vis, mapa) = self.filtrado(filtro)?;
-        let mut cena = vis.cena_impl(largura, altura, None, aparencia, Some(&mapa))?;
+        let comp = Composicao::da_tipografia(self, config, pizza_por_categoria);
+        let desenho = vis.desenhar(largura, altura, None, aparencia, Some(&mapa), &comp)?;
+        let m = desenho.moldura.clone();
+        let mut cena = desenho.cena.clone();
         let mut rotulos = Vec::new();
         let fonte = config.tamanho;
         let preto = aparencia.cor_texto.unwrap_or(Cor::rgb(32, 32, 32));
@@ -238,56 +295,126 @@ impl Grafico {
             return Ok(CenaAnotada { cena, rotulos });
         }
 
-        if config.mostrar_titulo && !self.titulo.is_empty() {
-            let texto = abreviar(&self.titulo, largura * 0.88, fonte * 1.4);
-            if !texto.is_empty() {
-                rotulos.push(rotulo(texto, largura * 0.5, altura * 0.048,
-                    fonte * 1.4, preto, AlinhamentoRotulo::Centro));
+        if m.legado {
+            let (base_titulo, base_subtitulo) = Self::bases_do_titulo(altura, fonte);
+            if config.mostrar_titulo && !self.titulo.is_empty() {
+                let texto = abreviar(&self.titulo, largura * 0.88, fonte * 1.4);
+                if !texto.is_empty() {
+                    rotulos.push(rotulo(texto, largura * 0.5, base_titulo,
+                        fonte * 1.4, preto, AlinhamentoRotulo::Centro));
+                }
             }
-        }
-        if !config.subtitulo.is_empty() {
-            let texto = abreviar(&config.subtitulo, largura * 0.88, fonte);
-            if !texto.is_empty() {
-                rotulos.push(rotulo(texto, largura * 0.5, altura * 0.087,
-                    fonte, preto, AlinhamentoRotulo::Centro));
+            if !config.subtitulo.is_empty() {
+                let texto = abreviar(&config.subtitulo, largura * 0.88, fonte);
+                if !texto.is_empty() {
+                    rotulos.push(rotulo(texto, largura * 0.5, base_subtitulo,
+                        fonte, preto, AlinhamentoRotulo::Centro));
+                }
+            }
+        } else {
+            let c = m.conteudo;
+            for (texto, pos, estilo) in [
+                (&self.titulo, m.titulo, aparencia.titulo),
+                (&config.subtitulo, m.subtitulo, aparencia.subtitulo),
+            ] {
+                let Some((y, tamanho)) = pos else { continue };
+                let estilo = estilo.unwrap_or_default();
+                let t = abreviar(texto, c.largura, tamanho);
+                if t.is_empty() {
+                    continue;
+                }
+                let (x, al) = match estilo.alinhamento {
+                    AlinhamentoTitulo::Esquerda => (c.x, AlinhamentoRotulo::Inicio),
+                    AlinhamentoTitulo::Centro => (c.x + c.largura / 2.0, AlinhamentoRotulo::Centro),
+                    AlinhamentoTitulo::Direita => (c.x + c.largura, AlinhamentoRotulo::Fim),
+                };
+                let mut r = rotulo(t, x, y, tamanho, estilo.fonte.cor.unwrap_or(preto), al);
+                r.negrito = estilo.fonte.negrito;
+                rotulos.push(r);
             }
         }
 
-        if let Some(eixos) = vis.eixos_com_layout(largura, altura, &aparencia.layout)? {
+        if let Some(eixos) = &desenho.eixos {
+            let (cv, cc) = (&aparencia.eixos.valores, &aparencia.eixos.categorias);
+            let barras = vis.tipo == Tipo::Barras;
+            let (cfg_x, cfg_y) = if barras { (cv, cc) } else { (cc, cv) };
             if config.mostrar_eixos {
                 let direito = eixos.area.x + eixos.area.largura;
                 let inferior = eixos.area.y + eixos.area.altura;
-                for tick in &eixos.ticks_x {
-                    let texto = match tick.numero {
-                        Some(v) => config.formato.formatar(v, config.localidade)?,
-                        None => tick.rotulo.clone(),
+                if cfg_x.mostrar {
+                    let rot = cfg_x.rotacao;
+                    let limite = if rot == RotacaoRotulos::Graus0 {
+                        (eixos.area.largura / eixos.ticks_x.len().max(1) as f32).max(20.0)
+                    } else {
+                        (altura * 0.3).max(20.0)
                     };
-                    let texto = abreviar(&texto, (eixos.area.largura / eixos.ticks_x.len().max(1) as f32).max(20.0), fonte);
-                    if !texto.is_empty() {
-                        rotulos.push(rotulo(texto, tick.posicao, inferior + fonte * 1.35,
-                            fonte, preto, AlinhamentoRotulo::Centro));
+                    for tick in &eixos.ticks_x {
+                        let texto = match tick.numero {
+                            Some(v) if cfg_x.formato.is_some() => texto_tick(cfg_x, &comp, v),
+                            Some(v) => config.formato.formatar(v, config.localidade)?,
+                            None => tick.rotulo.clone(),
+                        };
+                        let texto = abreviar(&texto, limite, fonte);
+                        if texto.is_empty() {
+                            continue;
+                        }
+                        let mut r = match rot {
+                            RotacaoRotulos::Graus0 => rotulo(texto, tick.posicao, inferior + fonte * 1.35,
+                                fonte, preto, AlinhamentoRotulo::Centro),
+                            RotacaoRotulos::Graus45 => rotulo(texto, tick.posicao + fonte * 0.3,
+                                inferior + fonte * 0.9, fonte, preto, AlinhamentoRotulo::Fim),
+                            RotacaoRotulos::Graus90 => rotulo(texto, tick.posicao + fonte * 0.35,
+                                inferior + 6.0, fonte, preto, AlinhamentoRotulo::Fim),
+                        };
+                        r.rotacao = rot.graus();
+                        rotulos.push(r);
                     }
                 }
-                for tick in &eixos.ticks_y {
-                    let texto = match tick.numero {
-                        Some(v) => config.formato.formatar(v, config.localidade)?,
-                        None => tick.rotulo.clone(),
-                    };
-                    let texto = abreviar(&texto, (eixos.area.x - 7.0).max(0.0), fonte);
-                    if !texto.is_empty() {
-                        rotulos.push(rotulo(texto, eixos.area.x - 5.0,
-                            tick.posicao + fonte * 0.33, fonte, preto,
-                            AlinhamentoRotulo::Fim));
+                if cfg_y.mostrar {
+                    for tick in &eixos.ticks_y {
+                        let texto = match tick.numero {
+                            Some(v) if cfg_y.formato.is_some() => texto_tick(cfg_y, &comp, v),
+                            Some(v) => config.formato.formatar(v, config.localidade)?,
+                            None => tick.rotulo.clone(),
+                        };
+                        let espaco = if m.legado { eixos.area.x - 7.0 } else { eixos.area.x - m.conteudo.x - 2.0 };
+                        let texto = abreviar(&texto, espaco.max(0.0), fonte);
+                        if !texto.is_empty() {
+                            rotulos.push(rotulo(texto, eixos.area.x - 5.0,
+                                tick.posicao + fonte * 0.33, fonte, preto,
+                                AlinhamentoRotulo::Fim));
+                        }
                     }
                 }
                 if !config.unidade.is_empty() {
                     let unit = abreviar(&config.unidade, eixos.area.largura * 0.5, fonte);
-                    rotulos.push(rotulo(unit, direito, (eixos.area.y - 4.0).max(fonte),
-                        fonte, preto, AlinhamentoRotulo::Fim));
+                    let y = if m.legado { (eixos.area.y - 4.0).max(fonte) } else { m.unidade_y };
+                    rotulos.push(rotulo(unit, direito, y, fonte, preto, AlinhamentoRotulo::Fim));
                 }
             }
-            if config.mostrar_valores && matches!(vis.tipo, Tipo::Colunas | Tipo::Barras) {
-                let barras = vis.retangulos_barras(largura, altura, &aparencia.layout)?;
+            // Títulos dos eixos (só no layout novo, que reserva o espaço).
+            let titulo_eixo = |cfg: &crate::ConfigEixo| -> Option<(String, f32, Cor, bool)> {
+                let t = cfg.titulo.as_ref().filter(|t| !t.is_empty())?;
+                Some((t.clone(), cfg.fonte_titulo.tamanho.unwrap_or(fonte),
+                    cfg.fonte_titulo.cor.unwrap_or(preto), cfg.fonte_titulo.negrito))
+            };
+            if let (Some(y), Some((t, tam, cor, negrito))) = (m.titulo_eixo_h, titulo_eixo(cfg_x)) {
+                let t = abreviar(&t, eixos.area.largura, tam);
+                let mut r = rotulo(t, eixos.area.x + eixos.area.largura / 2.0, y, tam, cor, AlinhamentoRotulo::Centro);
+                r.negrito = negrito;
+                rotulos.push(r);
+            }
+            if let (Some(x), Some((t, tam, cor, negrito))) = (m.titulo_eixo_v, titulo_eixo(cfg_y)) {
+                let t = abreviar(&t, eixos.area.altura, tam);
+                let mut r = rotulo(t, x, eixos.area.y + eixos.area.altura / 2.0, tam, cor, AlinhamentoRotulo::Centro);
+                r.negrito = negrito;
+                r.rotacao = 90.0;
+                rotulos.push(r);
+            }
+            if let Some(rd) = &aparencia.rotulos {
+                crate::rotulos::rotulos_dados(&vis, &desenho, aparencia, &mapa, rd, fonte, preto, &mut cena, &mut rotulos)?;
+            } else if config.mostrar_valores && matches!(vis.tipo, Tipo::Colunas | Tipo::Barras) {
+                let barras = vis.retangulos_barras_em(eixos, aparencia)?;
                 // Labels densos precisam de layout collision-aware; até 30
                 // barras, usa a posição geométrica existente, sem recalcular
                 // agregações nem tocar nas séries originais.
@@ -308,6 +435,10 @@ impl Grafico {
                     }
                 }
             }
+        } else if let Some(rd) = aparencia.rotulos.clone().or_else(|| {
+            (!m.legado || aparencia.pizza.is_some()).then(crate::rotulos::padrao_pizza)
+        }) {
+            crate::rotulos::rotulos_dados(&vis, &desenho, aparencia, &mapa, &rd, fonte, preto, &mut cena, &mut rotulos)?;
         } else {
             // Pizza: usar as mesmas caixas calculadas por CHT-010 e usadas
             // pelos backends SVG/PDF legados. A ausência de espaço oculta texto.
@@ -324,11 +455,13 @@ impl Grafico {
         }
         if config.mostrar_legenda {
             let fundo = aparencia.fundo.unwrap_or(Cor::rgb(255, 255, 255));
-            for item in self.itens_legenda_impl(largura, altura, config, aparencia, filtro, pizza_por_categoria) {
+            let fonte_legenda = aparencia.legenda.map(|l| l.fonte).unwrap_or_default();
+            let cor_legenda = fonte_legenda.cor.unwrap_or(preto);
+            for item in self.itens_legenda_impl(largura, altura, config, aparencia, filtro, pizza_por_categoria, &m) {
                 let (cor_marca, cor_texto) = if item.escondido {
-                    (esmaecer(item.cor, fundo), esmaecer(preto, fundo))
+                    (esmaecer(item.cor, fundo), esmaecer(cor_legenda, fundo))
                 } else {
-                    (item.cor, preto)
+                    (item.cor, cor_legenda)
                 };
                 cena.adicionar(Figura::Retangulo {
                     area: item.marca,
@@ -338,8 +471,11 @@ impl Grafico {
                         espessura: 0.0,
                     },
                 });
-                rotulos.push(rotulo(item.texto, item.x_texto, item.y_texto, fonte, cor_texto,
-                    AlinhamentoRotulo::Inicio));
+                let tamanho = if m.legado { fonte } else { fonte_legenda.tamanho.unwrap_or(fonte) };
+                let mut r = rotulo(item.texto, item.x_texto, item.y_texto, tamanho, cor_texto,
+                    AlinhamentoRotulo::Inicio);
+                r.negrito = fonte_legenda.negrito;
+                rotulos.push(r);
             }
         }
         Ok(CenaAnotada { cena, rotulos })
@@ -358,7 +494,14 @@ impl Grafico {
         if !config.mostrar_legenda || largura < 90.0 || altura < 70.0 {
             return Vec::new();
         }
-        self.itens_legenda_impl(largura, altura, config, aparencia, filtro, true)
+        let comp = Composicao::da_tipografia(self, config, true);
+        let Ok(m) = self
+            .filtrado(filtro)
+            .and_then(|(vis, _)| vis.moldura(largura, altura, &self.aparencia_anotada(largura, altura, config, aparencia), &comp))
+        else {
+            return Vec::new();
+        };
+        self.itens_legenda_impl(largura, altura, config, aparencia, filtro, true, &m)
     }
 
     /// Qual item da legenda está sob o ponto (índice da série, ou da categoria
@@ -378,6 +521,7 @@ impl Grafico {
             .map(|i| i.indice)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn itens_legenda_impl(
         &self,
         largura: f32,
@@ -386,20 +530,75 @@ impl Grafico {
         aparencia: &AparenciaGrafico,
         filtro: &FiltroLegenda,
         pizza_por_categoria: bool,
+        m: &Moldura,
     ) -> Vec<ItemLegenda> {
-        let fonte = config.tamanho;
         let entradas: Vec<(String, Cor)> = if self.tipo == Tipo::Pizza && pizza_por_categoria {
+            let v = &self.series[0].valores;
+            let (lo, hi) = v.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| (a.min(*x), b.max(*x)));
             self.categorias.iter().enumerate()
-                .map(|(i, c)| (c.clone(), aparencia.cor_serie(i, CORES_PIZZA[i % CORES_PIZZA.len()])))
+                .map(|(i, c)| (c.clone(), aparencia.cor_fatia(i, v[i], lo, hi)))
                 .collect()
         } else {
             self.series.iter().enumerate()
                 .map(|(i, s)| (s.nome.clone(), aparencia.cor_serie(i, s.cor)))
                 .collect()
         };
+        let item = |indice: usize, nome: String, cor: Cor, texto: String, x: f32, y: f32, fonte: f32, espaco: f32| ItemLegenda {
+            indice,
+            nome,
+            cor,
+            escondido: filtro.esta_oculto(indice),
+            marca: Retangulo::novo(x, y - fonte * 0.75, fonte * 0.75, fonte * 0.75),
+            caixa: Retangulo::novo(x, y - fonte * 0.9, espaco, fonte * 1.3),
+            texto,
+            x_texto: x + fonte * 1.0,
+            y_texto: y,
+        };
         let mut itens = Vec::new();
+        if !m.legado {
+            let Some((posicao, area, fonte)) = m.legenda else { return itens };
+            let textos: Vec<String> = entradas.iter().map(|(n, _)| {
+                let limite = if matches!(posicao, PosicaoLegenda::Esquerda | PosicaoLegenda::Direita) {
+                    area.largura - fonte * 2.3
+                } else {
+                    area.largura * 0.45
+                };
+                abreviar(n, limite, fonte)
+            }).collect();
+            if matches!(posicao, PosicaoLegenda::Esquerda | PosicaoLegenda::Direita) {
+                let passo = fonte * 1.5;
+                let total = passo * textos.iter().filter(|t| !t.is_empty()).count() as f32;
+                let mut y = (m.plot.y + m.plot.altura / 2.0 - total / 2.0).max(area.y) + fonte;
+                for (indice, ((nome, cor), texto)) in entradas.into_iter().zip(textos).enumerate() {
+                    if texto.is_empty() { continue; }
+                    if y > area.y + area.altura { break; }
+                    let espaco = largura_item_legenda(&texto, fonte);
+                    itens.push(item(indice, nome, cor, texto, area.x, y, fonte, espaco));
+                    y += passo;
+                }
+            } else {
+                let linhas = quebrar_legenda(&textos, fonte, area.largura);
+                let mut entradas: Vec<Option<(String, Cor)>> = entradas.into_iter().map(Some).collect();
+                for (k, linha) in linhas.iter().enumerate() {
+                    let total: f32 = linha.iter().map(|i| largura_item_legenda(&textos[*i], fonte)).sum();
+                    let mut x = area.x + ((area.largura - total) / 2.0).max(0.0);
+                    let y = area.y + fonte * 1.05 + k as f32 * fonte * 1.4;
+                    for &i in linha {
+                        let espaco = largura_item_legenda(&textos[i], fonte);
+                        if textos[i].is_empty() { continue; }
+                        let (nome, cor) = entradas[i].take().expect("item único");
+                        itens.push(item(i, nome, cor, textos[i].clone(), x, y, fonte, espaco));
+                        x += espaco;
+                    }
+                }
+            }
+            return itens;
+        }
+        let fonte = config.tamanho;
         let mut x = largura * 0.12;
-        let mut y = altura * 0.925;
+        // Abaixo dos rótulos do eixo X (`layout_anotado` deixou o espaço).
+        let base_eixo = if config.mostrar_eixos && self.tipo != Tipo::Pizza { m.plot.y + m.plot.altura + fonte * 1.35 } else { 0.0 };
+        let mut y = (altura * 0.925).max(base_eixo + fonte * 1.3).min(altura - fonte * 0.3);
         for (indice, (nome, cor)) in entradas.into_iter().enumerate() {
             let texto = abreviar(&nome, largura * 0.45, fonte);
             if texto.is_empty() { continue; }
@@ -409,17 +608,7 @@ impl Grafico {
                 y += fonte * 1.4;
             }
             if y + fonte * 0.4 > altura { break; }
-            itens.push(ItemLegenda {
-                indice,
-                nome,
-                cor,
-                escondido: filtro.esta_oculto(indice),
-                marca: Retangulo::novo(x, y - fonte * 0.75, fonte * 0.75, fonte * 0.75),
-                caixa: Retangulo::novo(x, y - fonte * 0.9, espaco, fonte * 1.3),
-                texto,
-                x_texto: x + fonte * 1.0,
-                y_texto: y,
-            });
+            itens.push(item(indice, nome, cor, texto, x, y, fonte, espaco));
             x += espaco;
         }
         itens
@@ -496,9 +685,19 @@ fn svg_da_cena_anotada(layout: &CenaAnotada) -> Result<String, ErroExportacaoTip
             AlinhamentoRotulo::Centro => "middle",
             AlinhamentoRotulo::Fim => "end",
         };
+        let mut extra = String::new();
+        if t.negrito {
+            extra.push_str(" font-weight=\"bold\"");
+        }
+        if t.rotacao != 0.0 {
+            write!(&mut extra, " transform=\"rotate({:.3} {:.3} {:.3})\"", -t.rotacao, t.x, t.y).unwrap();
+        }
+        if t.cor.a != 255 {
+            write!(&mut extra, " fill-opacity=\"{:.3}\"", f32::from(t.cor.a) / 255.0).unwrap();
+        }
         writeln!(&mut overlays,
-            "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"sans-serif\" font-size=\"{:.3}\" text-anchor=\"{}\" fill=\"#{:02x}{:02x}{:02x}\">{}</text>",
-            t.x, t.y, t.tamanho, ancora, t.cor.r, t.cor.g, t.cor.b,
+            "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"sans-serif\" font-size=\"{:.3}\" text-anchor=\"{}\" fill=\"#{:02x}{:02x}{:02x}\"{}>{}</text>",
+            t.x, t.y, t.tamanho, ancora, t.cor.r, t.cor.g, t.cor.b, extra,
             escapar_svg(&t.texto)).unwrap();
     }
     if let Some(pos) = svg.rfind("</svg>") {
@@ -521,7 +720,7 @@ fn pdf_da_cena_anotada(layout: &CenaAnotada) -> Result<Vec<u8>, ErroExportacaoTi
             y: t.y,
             tamanho: t.tamanho,
             cor: t.cor,
-            fonte: FontePdf::Helvetica,
+            fonte: if t.negrito { FontePdf::Negrito } else { FontePdf::Helvetica },
         }
     }).collect::<Vec<_>>();
     exportar_pdf_com_texto(&layout.cena, &textos)
@@ -542,6 +741,32 @@ mod testes {
                 Serie { nome: "Vendas".into(), valores: vec![-1234.5, 2345.5], cor: Cor::rgb(230, 10, 20) },
                 Serie { nome: "Custos".into(), valores: vec![200.0, 500.0], cor: Cor::rgb(15, 20, 210) },
             ],
+        }
+    }
+
+    #[test]
+    fn legenda_nao_pisa_nos_rotulos_do_eixo_nem_no_titulo() {
+        let g = Grafico {
+            titulo: "ΔV (%) por circuito × limite".into(),
+            tipo: Tipo::Colunas,
+            categorias: vec!["C1".into(), "C2".into()],
+            series: vec![
+                Serie { nome: "ΔV".into(), valores: vec![2.0, 3.0], cor: Cor::rgb(31, 58, 95) },
+                Serie { nome: "Limite".into(), valores: vec![4.0, 4.0], cor: Cor::rgb(198, 40, 40) },
+            ],
+        };
+        for (w, h, fonte) in [(800.0, 450.0, 12.0), (620.0, 180.0, 12.0), (480.0, 300.0, 14.0)] {
+            let cfg = TipografiaGrafico { tamanho: fonte, ..Default::default() };
+            let a = g.cena_anotada(w, h, &cfg).unwrap();
+            let eixos = g.eixos_com_layout(w, h, &g.layout_anotado(w, h, &cfg)).unwrap().unwrap();
+            let base_x = eixos.area.y + eixos.area.altura + fonte * 1.35;
+            let titulo_y = a.rotulos.iter().find(|r| r.texto.starts_with("ΔV (%)")).unwrap().y;
+            assert!(titulo_y - fonte * 1.4 * 0.8 >= 0.0, "{w}x{h}: título cortado em cima");
+            assert!(titulo_y < eixos.area.y, "{w}x{h}: título dentro da área");
+            for r in a.rotulos.iter().filter(|r| r.texto == "Limite" || r.texto == "ΔV") {
+                assert!(r.y >= base_x + fonte, "{w}x{h}: legenda em {} pisa no eixo ({base_x})", r.y);
+                assert!(r.y <= h, "{w}x{h}: legenda fora");
+            }
         }
     }
 

@@ -121,7 +121,7 @@ impl Grafico {
     ) -> Result<Cena, ErroGrafico> {
         self.validar()?;
         let (g, mapa) = self.filtrado(filtro)?;
-        g.cena_impl(largura, altura, None, aparencia, Some(&mapa))
+        g.cena_impl(largura, altura, None, aparencia, Some(&mapa), self)
     }
 
     /// Eixos recalculados só com o que está visível.
@@ -133,7 +133,7 @@ impl Grafico {
         filtro: &FiltroLegenda,
     ) -> Result<Option<Eixos>, ErroGrafico> {
         self.validar()?;
-        self.filtrado(filtro)?.0.eixos_com_layout(largura, altura, &aparencia.layout)
+        self.filtrado(filtro)?.0.eixos_com_aparencia(largura, altura, aparencia)
     }
 
     /// Fatias da pizza sem as escondidas: proporções refeitas com o total visível,

@@ -145,7 +145,8 @@ impl Grafico {
         }
         self.validar()?;
         aparencia.validar()?;
-        aparencia.layout.area(largura, altura)?;
+        let comp = crate::moldura::Composicao::padrao(self, aparencia);
+        let moldura = self.moldura(largura, altura, aparencia, &comp)?;
         if !Retangulo::novo(0.0, 0.0, largura, altura).contem(ponto) {
             return Ok(None);
         }
@@ -153,7 +154,7 @@ impl Grafico {
             Tipo::Colunas | Tipo::Barras => {
                 // Ordem série-maior/categoria-menor; o último retângulo fica
                 // visualmente acima de qualquer anterior em caso de overlap.
-                let barras = self.retangulos_barras(largura, altura, &aparencia.layout)?;
+                let barras = self.retangulos_barras(largura, altura, aparencia)?;
                 for (serie, categoria, area) in barras.iter().rev() {
                     let exp = Retangulo::novo(
                         area.x - tolerancia,
@@ -175,12 +176,14 @@ impl Grafico {
                 Ok(None)
             }
             Tipo::Pizza => {
-                let cena = self.cena_estilizada(largura, altura, aparencia)?;
+                // Geometria da fatia (giro, rosca e explosão), não a da figura.
+                let geo = crate::desenho::GeometriaPizza::nova(
+                    aparencia, &moldura, largura, altura, self.categorias.len());
                 let fatias = self.fatias_pizza(largura, altura)?;
-                // Fatias zero nunca geram Figura, índices originais preservados.
-                let pular = usize::from(aparencia.fundo.is_some());
-                for (figura, fatia) in cena.figuras.iter().skip(pular).zip(fatias.iter()).rev() {
-                    if figura.atinge(ponto, tolerancia) {
+                // Fatias zero nunca geram área, índices originais preservados.
+                for fatia in fatias.iter().rev() {
+                    let (inicio, fim) = ((fatia.inicio + geo.giro) as f32, (fatia.fim + geo.giro) as f32);
+                    if geo.contem(fatia.indice, inicio, fim, ponto, tolerancia) {
                         return Ok(Some(HitGrafico {
                             alvo: self.alvo(0, fatia.indice), distancia: 0.0,
                         }));
@@ -189,8 +192,9 @@ impl Grafico {
                 Ok(None)
             }
             Tipo::Linhas | Tipo::Area | Tipo::Degraus | Tipo::Dispersao => {
-                let eixos = self.eixos_com_layout(largura, altura, &aparencia.layout)?
+                let eixos = self.eixos_na_area(moldura.plot, aparencia)?
                     .ok_or(ErroInteracao::Grafico(ErroGrafico::EixoInvalido))?;
+                let xs = self.xs_pontos(eixos.area, aparencia)?;
                 let area = eixos.area;
                 // Nenhum ponto fora da área dos eixos deve captar clique,
                 // mesmo que esteja próximo de uma borda da janela.
@@ -205,22 +209,7 @@ impl Grafico {
                 for (serie_idx, serie) in self.series.iter().enumerate() {
                     let mut anterior: Option<(usize, Ponto)> = None;
                     for (categoria_idx, &valor) in serie.valores.iter().enumerate() {
-                        let x = match self.tipo {
-                            Tipo::Linhas | Tipo::Area | Tipo::Degraus => {
-                                if self.categorias.len() == 1 { area.x + area.largura / 2.0 }
-                                else {
-                                    area.x + area.largura * (categoria_idx as f32
-                                        / (self.categorias.len() - 1) as f32)
-                                }
-                            }
-                            Tipo::Dispersao => {
-                                let x = self.categorias[categoria_idx]
-                                    .parse::<f64>().map_err(|_| ErroGrafico::EixoInvalido)?;
-                                area.x + area.largura * eixos.escala_x
-                                    .ok_or(ErroGrafico::EixoInvalido)?.fracao(x)
-                            }
-                            _ => unreachable!(),
-                        };
+                        let x = xs[categoria_idx];
                         let y = area.y + area.altura * (1.0 - escala_y.fracao(valor));
                         let atual = Ponto::novo(x, y);
                         // Array fixo: nenhuma alocação por amostra, inclusive

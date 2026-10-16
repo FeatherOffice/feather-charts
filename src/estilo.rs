@@ -447,6 +447,9 @@ pub struct EstiloSerie {
     pub opacidade: Option<f32>,
     pub rotulos: Rotulos,
     pub pontos: BTreeMap<usize, EstiloPonto>,
+    /// Tendência, barras de erro e linhas de máximo/mínimo/média.
+    #[serde(skip_serializing_if = "crate::analitico::Analise::vazia")]
+    pub analise: crate::analitico::Analise,
 }
 
 /// Espaçamento das colunas/barras, como no Excel.
@@ -473,6 +476,33 @@ pub enum Empilhar {
 impl Empilhar {
     pub fn nenhum(&self) -> bool {
         *self == Self::Nenhum
+    }
+}
+
+/// A dica que aparece com o mouse sobre um ponto (no aplicativo; não vai
+/// no SVG exportado).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Dica {
+    /// `Some(false)` desliga a dica.
+    pub visivel: Option<bool>,
+    /// Título com a categoria (padrão: sim).
+    pub categoria: Option<bool>,
+    /// Nome da série antes do valor (padrão: sim).
+    pub serie: Option<bool>,
+    /// Porcentagem do total da categoria (ou da pizza).
+    pub percentual: bool,
+    /// `None` = o formato dos rótulos/eixo.
+    pub formato: Option<FormatoNum>,
+    pub prefixo: String,
+    pub sufixo: String,
+    pub fundo: Option<CorEstilo>,
+    pub texto: Option<CorEstilo>,
+    pub tamanho: Option<f32>,
+}
+impl Dica {
+    pub fn vazia(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -504,8 +534,15 @@ pub struct EstiloGrafico {
     /// Colunas e barras empilhadas (o tipo "Colunas empilhadas" do painel).
     #[serde(skip_serializing_if = "Empilhar::nenhum")]
     pub empilhar: Empilhar,
+    /// Linhas e áreas em degraus (o tipo "Área em degraus" do painel). Vem
+    /// do tipo do gráfico na hora de desenhar; não é gravado.
+    #[serde(skip)]
+    pub degraus: bool,
     /// Descrição para leitores de tela (vai no `<title>`/`<desc>` do SVG).
     pub texto_alternativo: String,
+    /// Dica do mouse.
+    #[serde(skip_serializing_if = "Dica::vazia")]
+    pub dica: Dica,
 }
 
 impl EstiloGrafico {

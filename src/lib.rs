@@ -7,6 +7,7 @@ use feather_draw::{Cena, Cor};
 use feather_draw::Figura;
 
 pub mod motor;
+pub mod analitico;
 pub mod amostragem;
 pub mod contrato;
 pub mod aparencia;

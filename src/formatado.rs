@@ -14,6 +14,9 @@ use crate::{ErroGrafico, Grafico, Tipo};
 use feather_draw::Cor;
 use std::fmt::Write;
 
+mod avancado;
+pub use avancado::{DadosDica, PedidoAvancado, TipoAvancado};
+
 const FAMILIA_PADRAO: &str = "Noto Sans, DejaVu Sans, Liberation Sans, Arial, sans-serif";
 const TEXTO_PADRAO: Cor = Cor::rgba(32, 32, 32, 255);
 const EIXO_PADRAO: Cor = Cor::rgba(95, 99, 104, 255);
@@ -146,6 +149,9 @@ struct Desenho {
     defs: String,
     corpo: String,
     mapa: MapaGrafico,
+    /// Contorno da cor do fundo em volta do texto (rótulos que caem por
+    /// cima de linhas e barras continuam legíveis).
+    halo: Option<Cor>,
 }
 
 /// Onde ficou cada parte clicável do gráfico desenhado, em unidades do SVG
@@ -157,6 +163,9 @@ pub struct MapaGrafico {
     pub legenda: Vec<AlvoLegenda>,
     /// Pontos de dados, na ordem do desenho (o último fica por cima).
     pub pontos: Vec<AlvoPonto>,
+    /// O que a dica mostra quando o ponto não é um valor das séries de
+    /// entrada (faixas do histograma, duração no Gantt, velas…).
+    pub dica: Option<DadosDica>,
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AlvoLegenda {
@@ -225,8 +234,10 @@ impl Desenho {
         let giro = if giro.abs() > 0.01 { format!(" transform=\"rotate({giro:.1} {x:.2} {y:.2})\"") } else { String::new() };
         let _ = writeln!(
             self.corpo,
-            "<text class=\"{classe}\" x=\"{x:.2}\" y=\"{y:.2}\" text-anchor=\"{a}\" {}{giro}>{}</text>",
-            f.atributos(), escapar(t)
+            "<text class=\"{classe}\" x=\"{x:.2}\" y=\"{y:.2}\" text-anchor=\"{a}\" {}{giro}{}>{}</text>",
+            f.atributos(),
+            self.halo.map_or_else(String::new, |c| format!(" paint-order=\"stroke\" stroke=\"{}\" stroke-width=\"3\" stroke-linejoin=\"round\"", hex6(c))),
+            escapar(t)
         );
     }
     #[allow(clippy::too_many_arguments)]
@@ -287,6 +298,12 @@ fn formatar(v: f64, f: FormatoNum, casas_auto: u8) -> String {
         FormatoNum::Percentual { casas } => FormatoNumero::Percentual(casas.min(6)),
     };
     fmt.formatar(v, LocalidadeGrafico::PtBr).unwrap_or_else(|_| format!("{v}"))
+}
+impl FormatoNum {
+    /// O número como o gráfico mostra (pt-BR), para a dica do mouse e afins.
+    pub fn formatar(self, v: f64) -> String {
+        formatar(v, self, casas_de(v))
+    }
 }
 /// Casas para que `v` apareça sem arredondar demais (até 2).
 fn casas_de(v: f64) -> u8 {
@@ -423,6 +440,9 @@ struct Resolvido<'a> {
     base: Fonte,
 }
 impl Resolvido<'_> {
+    fn ativo(&self, i: usize) -> bool {
+        !self.e.legenda.desligado(i)
+    }
     fn eixo_cor(&self) -> Cor {
         self.tema.map_or(EIXO_PADRAO, |t| t.eixo.0)
     }
@@ -522,6 +542,20 @@ impl Grafico {
     }
 
     fn desenhar_formatado(&self, largura: f32, altura: f32, e: &EstiloGrafico) -> Result<(String, MapaGrafico), ErroGrafico> {
+        self.desenhar_com(largura, altura, e, None)
+    }
+
+    /// Os tipos que não cabem no desenho cartesiano comum (radar, cascata,
+    /// histograma, combinado, bolhas, velas, Gantt, mapa de calor, linha 3D),
+    /// com a mesma moldura: fundo, título, legenda, tema e fonte do estilo.
+    pub fn exportar_svg_avancado_com_mapa(&self, largura: f32, altura: f32, e: &EstiloGrafico, pedido: &PedidoAvancado) -> Result<(String, MapaGrafico), ErroGrafico> {
+        pedido.validar(self)?;
+        let mut g = self.clone();
+        g.tipo = Tipo::Colunas;
+        g.desenhar_com(largura, altura, e, Some(pedido))
+    }
+
+    fn desenhar_com(&self, largura: f32, altura: f32, e: &EstiloGrafico, avancado: Option<&PedidoAvancado>) -> Result<(String, MapaGrafico), ErroGrafico> {
         self.validar()?;
         if !largura.is_finite() || !altura.is_finite() || largura < 20.0 || altura < 20.0 {
             return Err(ErroGrafico::EixoInvalido);
@@ -539,7 +573,7 @@ impl Grafico {
             italico: e.fonte.italico.unwrap_or(false),
         };
         let r = Resolvido { e, tema, base };
-        let mut d = Desenho { defs: String::new(), corpo: String::new(), mapa: MapaGrafico::default() };
+        let mut d = Desenho { defs: String::new(), corpo: String::new(), mapa: MapaGrafico::default(), halo: None };
         let (w, h) = (largura, altura);
 
         // Área do gráfico.
@@ -595,10 +629,13 @@ impl Grafico {
         let f_leg = Fonte::de(&r.base, &e.legenda.fonte, 1.0);
         let total_itens = if pizza { self.categorias.len() } else { self.series.len() };
         let posicao_leg = e.legenda.posicao.unwrap_or_default();
-        let itens: Vec<(usize, String, Cor)> = if posicao_leg == PosicaoLegenda::Nenhuma {
+        let com_legenda = avancado.map_or(true, |p| p.tipo.tem_legenda());
+        let so_estas = avancado.and_then(|p| p.tipo.itens_legenda(self.series.len()));
+        let itens: Vec<(usize, String, Cor)> = if posicao_leg == PosicaoLegenda::Nenhuma || !com_legenda {
             Vec::new()
         } else {
-            e.legenda.ordem_visivel(total_itens).into_iter().map(|i| {
+            e.legenda.ordem_visivel(total_itens).into_iter()
+                .filter(|i| so_estas.as_ref().map_or(true, |l| l.contains(i))).map(|i| {
                 let item = e.legenda.itens.get(&i);
                 let nome = item.and_then(|it| it.texto.clone()).unwrap_or_else(|| {
                     if pizza { self.categorias[i].clone() } else { self.series[i].nome.clone() }
@@ -609,7 +646,7 @@ impl Grafico {
             }).filter(|(_, n, _)| !n.trim().is_empty()).collect()
         };
         let fs = f_leg.tamanho;
-        let linha_serie = matches!(self.tipo, Tipo::Linhas | Tipo::Degraus);
+        let linha_serie = matches!(self.tipo, Tipo::Linhas | Tipo::Degraus) || avancado.is_some_and(|p| p.tipo == TipoAvancado::Linha3d);
         let amostra_w = if linha_serie { fs * 1.6 } else { fs * 0.8 };
         let item_w = |n: &str| amostra_w + fs * 0.4 + largura_texto(n, fs) + fs * 1.0;
         let mut desenhar_legenda: Vec<(f32, f32, usize, String, Cor)> = Vec::new();
@@ -695,7 +732,9 @@ impl Grafico {
             });
         }
 
-        if pizza {
+        if let Some(p) = avancado {
+            avancado::desenhar(self, &mut d, &r, caixa, p);
+        } else if pizza {
             self.desenhar_pizza(&mut d, &r, caixa);
         } else {
             self.desenhar_cartesiano(&mut d, &r, caixa);
@@ -728,7 +767,7 @@ impl Grafico {
         let (cx, cy) = (area.x + area.w / 2.0, area.y + area.h / 2.0);
         let raio = (area.w.min(area.h) / 2.0 * 0.9).max(2.0);
         let valores = &self.series[0].valores;
-        let soma: f64 = valores.iter().enumerate().filter(|(i, v)| **v > 0.0 && !e.legenda.desligado(*i)).map(|(_, v)| *v).sum();
+        let soma: f64 = valores.iter().enumerate().filter(|(i, v)| **v > 0.0 && r.ativo(*i)).map(|(_, v)| *v).sum();
         let estilo = e.serie(0);
         let contorno = estilo.and_then(|s| s.contorno).map(|c| c.0);
         let esp_contorno = estilo.and_then(|s| s.espessura_contorno).unwrap_or(1.0);
@@ -737,7 +776,7 @@ impl Grafico {
         let mostra = rot.visivel.unwrap_or(true);
         let mut ang = -std::f32::consts::FRAC_PI_2;
         for (i, &v) in valores.iter().enumerate() {
-            if v <= 0.0 || soma <= 0.0 || e.legenda.desligado(i) {
+            if v <= 0.0 || soma <= 0.0 || !r.ativo(i) {
                 continue;
             }
             let frac = (v / soma) as f32;
@@ -800,12 +839,12 @@ impl Grafico {
         let barras = matches!(self.tipo, Tipo::Colunas | Tipo::Barras);
         let n = self.categorias.len();
         // Séries desligadas pelo clique na legenda não entram no desenho nem na escala.
-        let ligada = |s: usize| !e.legenda.desligado(s);
+        let ligada = |s: usize| r.ativo(s);
         // Posição de cada série no grupo de barras, contando só as ligadas.
         let vagas: Vec<usize> = (0..self.series.len()).scan(0usize, |k, s| { let v = *k; if ligada(s) { *k += 1; } Some(v) }).collect();
         // Empilhadas: cada série começa onde a anterior terminou (positivos
         // para cima, negativos para baixo); em 100%, a parte do total.
-        let empilhar = if barras { e.empilhar } else { Empilhar::Nenhum };
+        let empilhar = if dispersao { Empilhar::Nenhum } else { e.empilhar };
         let pilhas: Option<Vec<Vec<(f64, f64)>>> = (!empilhar.nenhum()).then(|| {
             let total: Vec<f64> = (0..n).map(|i| self.series.iter().enumerate().filter(|(k, _)| ligada(*k)).map(|(_, s)| s.valores.get(i).copied().unwrap_or(0.0).abs()).sum()).collect();
             let (mut pos, mut neg) = (vec![0.0f64; n], vec![0.0f64; n]);
@@ -882,6 +921,13 @@ impl Grafico {
         let mut inf = if vis_baixo { alt_girado(lw_baixo, &f_baixo, giro_baixo) + 8.0 } else { 0.0 };
         let mut esq = if vis_esq { larg(&rot_esq, &f_esq).min(caixa.w * 0.35) + 8.0 } else { 0.0 };
         let mut dir = if tem_y2 && vis_y2 && !horizontal { larg(&rot_y2, &f_eixo_y2) + 8.0 } else { lw_baixo.min(60.0) / 2.0 };
+        // O primeiro rótulo das categorias fica centrado no começo do eixo:
+        // sem reserva à esquerda, nome comprido sai cortado ("na Beatriz").
+        if !horizontal && vis_baixo && giro_baixo.abs() < 0.01 {
+            let primeiro = rot_baixo.first().map_or(0.0, |t| largura_texto(t, f_baixo.tamanho)).min(caixa.w * 0.3);
+            let banda_aprox = if barras && n > 0 { (caixa.w - esq - dir) / n as f32 } else { 0.0 };
+            esq = esq.max(primeiro / 2.0 - banda_aprox / 2.0 + 2.0);
+        }
         let mut sup = f_eixo_y.tamanho * 0.6;
         let (tit_baixo, f_tb, tit_esq, f_te) = if horizontal {
             (e.eixo_y.titulo.clone(), f_tit_y.clone(), e.eixo_x.titulo.clone(), f_tit_x.clone())
@@ -1085,35 +1131,46 @@ impl Grafico {
                 }
                 continue;
             }
-            // Linhas, área, degraus e dispersão.
-            let pontos: Vec<(f32, f32)> = serie.valores.iter().enumerate().map(|(i, v)| (cat_px(i), valor_px(esc, *v))).collect();
-            let esp = est.and_then(|s| s.espessura_linha).unwrap_or(2.0);
-            let traco = est.and_then(|s| s.traco).unwrap_or_default();
-            let suave = est.and_then(|s| s.suavizar).unwrap_or(false);
-            let pontos_linha: Vec<(f32, f32)> = if self.tipo == Tipo::Degraus {
-                let mut v = Vec::with_capacity(pontos.len() * 2);
-                for (k, p) in pontos.iter().enumerate() {
+            // Linhas, área, degraus e dispersão (empilhadas: o topo da pilha).
+            let topo = |i: usize, v: f64| pilhas.as_ref().map_or(v, |p| p[s][i].1);
+            let pontos: Vec<(f32, f32)> = serie.valores.iter().enumerate().map(|(i, v)| (cat_px(i), valor_px(esc, topo(i, *v)))).collect();
+            let em_degraus = self.tipo == Tipo::Degraus || (e.degraus && matches!(self.tipo, Tipo::Area | Tipo::Linhas));
+            let degrau = |pts: &[(f32, f32)]| -> Vec<(f32, f32)> {
+                let mut v = Vec::with_capacity(pts.len() * 2);
+                for (k, p) in pts.iter().enumerate() {
                     if k > 0 {
-                        v.push((p.0, pontos[k - 1].1));
+                        v.push((p.0, pts[k - 1].1));
                     }
                     v.push(*p);
                 }
                 v
-            } else {
-                pontos.clone()
             };
-            let suave = suave && self.tipo != Tipo::Degraus;
+            let esp = est.and_then(|s| s.espessura_linha).unwrap_or(2.0);
+            let traco = est.and_then(|s| s.traco).unwrap_or_default();
+            let suave = est.and_then(|s| s.suavizar).unwrap_or(false);
+            let pontos_linha: Vec<(f32, f32)> = if em_degraus { degrau(&pontos) } else { pontos.clone() };
+            let suave = suave && !em_degraus;
             if self.tipo == Tipo::Area && pontos.len() > 1 {
-                let base_v = esc.base(e.eixo_y.cruzamento);
-                let pb = valor_px(esc, base_v);
                 let mut dd = caminho(&pontos_linha, suave);
-                let (p0, pn) = (pontos[0], pontos[pontos.len() - 1]);
-                let _ = write!(dd, " L{:.2} {pb:.2} L{:.2} {pb:.2} Z", pn.0, p0.0);
-                let _ = writeln!(d.corpo, "<path class=\"area-serie s{s}\" d=\"{dd}\" {}/>", preencher(com_alfa(cor, 0.35)));
+                if let Some(p) = &pilhas {
+                    // Empilhada: a faixa entre o topo da série e o da anterior.
+                    let base: Vec<(f32, f32)> = (0..pontos.len()).map(|i| (cat_px(i), valor_px(esc, p[s][i].0))).collect();
+                    let base = if em_degraus { degrau(&base) } else { base };
+                    for q in base.iter().rev() {
+                        let _ = write!(dd, " L{:.2} {:.2}", q.0, q.1);
+                    }
+                    dd.push_str(" Z");
+                } else {
+                    let pb = valor_px(esc, esc.base(e.eixo_y.cruzamento));
+                    let (p0, pn) = (pontos[0], pontos[pontos.len() - 1]);
+                    let _ = write!(dd, " L{:.2} {pb:.2} L{:.2} {pb:.2} Z", pn.0, p0.0);
+                }
+                let opac = if pilhas.is_some() { 0.75 } else { 0.35 };
+                let _ = writeln!(d.corpo, "<path class=\"area-serie s{s}\" d=\"{dd}\" {}/>", preencher(com_alfa(cor, opac)));
             }
             if !dispersao && pontos_linha.len() > 1 && esp > 0.0 {
                 let pinta_ponto = est.is_some_and(|s| s.pontos.values().any(|p| p.cor.is_some()));
-                if pinta_ponto && self.tipo != Tipo::Degraus {
+                if pinta_ponto && !em_degraus {
                     // Cada trecho na cor do ponto em que chega.
                     for k in 1..pontos.len() {
                         let c = r.cor_ponto(self, s, k);
@@ -1154,6 +1211,134 @@ impl Grafico {
                 }
             }
         }
+        // Elementos analíticos (tendência, barras de erro, máx/mín/média),
+        // por cima das séries e dentro do recorte da plotagem.
+        let mut legendas_analise: Vec<(String, Cor)> = Vec::new();
+        let fundo_texto = [&e.area_plotagem.preenchimento, &e.area_grafico.preenchimento].into_iter()
+            .find_map(|p| match p { Some(Preenchimento::Solido { cor }) if cor.0.a == 255 => Some(cor.0), _ => None })
+            .or_else(|| r.tema.and_then(|t| t.plotagem).map(|c| c.0))
+            .or_else(|| r.tema.map(|t| t.fundo.0))
+            .unwrap_or(Cor::rgba(255, 255, 255, 255));
+        d.halo = Some(fundo_texto);
+        for (s, serie) in self.series.iter().enumerate() {
+            let Some(an) = e.serie(s).map(|x| &x.analise).filter(|a| !a.vazia()) else { continue };
+            if !ligada(s) || serie.valores.is_empty() {
+                continue;
+            }
+            let esc = escala_da(s);
+            let cor = r.cor_serie(self, s);
+            // Valor de cada ponto (o topo da pilha nas empilhadas).
+            let ys: Vec<f64> = match &pilhas {
+                Some(p) => p[s].iter().map(|q| q.1).collect(),
+                None => serie.valores.clone(),
+            };
+            let xs: Vec<f64> = if dispersao { xs.clone() } else { (1..=ys.len()).map(|i| i as f64).collect() };
+            // Barras: o centro da barra desta série dentro do grupo.
+            let desvio = if barras { passo_barra * vagas[s] as f32 + largura_barra / 2.0 - grupo / 2.0 } else { 0.0 };
+            let ponto = |xv: f64, yv: f64| -> (f32, f32) {
+                let cat = if let (Some(ex), true) = (ex.as_ref(), dispersao) {
+                    dados.x + dados.w * ex.fracao(xv)
+                } else {
+                    let t = if centro_cat { ((xv - 0.5) / n as f64) as f32 } else if n == 1 { 0.5 } else { ((xv - 1.0) / (n - 1) as f64) as f32 };
+                    let t = if e.eixo_x.invertido { 1.0 - t } else { t };
+                    (if horizontal { dados.y + dados.h * t } else { dados.x + dados.w * t }) + desvio
+                };
+                let v = valor_px(esc, yv);
+                if horizontal { (v, cat) } else { (cat, v) }
+            };
+            // Linhas de máximo, mínimo e média, de lado a lado da plotagem.
+            let f_ref = Fonte::de(&r.base, &Texto::default(), 0.85);
+            let finitos = || ys.iter().copied().filter(|v| v.is_finite());
+            let n_fin = finitos().count();
+            if n_fin > 0 {
+                let refs = [
+                    (an.maximo, "Máx", finitos().fold(f64::NEG_INFINITY, f64::max), Traco::Tracejado),
+                    (an.minimo, "Mín", finitos().fold(f64::INFINITY, f64::min), Traco::Tracejado),
+                    (an.media, "Média", finitos().sum::<f64>() / n_fin as f64, Traco::Pontilhado),
+                ];
+                for (ligado, nome, v, traco) in refs {
+                    if !ligado {
+                        continue;
+                    }
+                    let p = valor_px(esc, v);
+                    let rotulo = format!("{nome}: {}", formatar(v, e.eixo_y.formato.unwrap_or_default(), casas_de(v)));
+                    let mut fr = f_ref.clone();
+                    fr.cor = cor;
+                    if horizontal {
+                        d.linha(p, plot.y, p, plot.y + plot.h, cor, 1.2, traco, "analise-ref");
+                        d.texto(p + 3.0, plot.y + fr.tamanho, &rotulo, &fr, Ancora::Inicio, 0.0, "analise-ref-rotulo");
+                    } else {
+                        d.linha(plot.x, p, plot.x + plot.w, p, cor, 1.2, traco, "analise-ref");
+                        d.texto(plot.x + plot.w - 3.0, p - 3.0, &rotulo, &fr, Ancora::Fim, 0.0, "analise-ref-rotulo");
+                    }
+                }
+            }
+            // Barras de erro.
+            if let Some(b) = &an.erro {
+                let c = b.cor.map_or(EIXO_PADRAO, |c| c.0);
+                let esp = b.espessura.unwrap_or(1.2);
+                let ponta = if b.sem_ponta { 0.0 } else { (largura_barra * 0.25).clamp(3.0, 6.0) };
+                for (i, (baixo, cima)) in crate::analitico::extensao_erro(b, &ys).into_iter().enumerate() {
+                    if !ys[i].is_finite() {
+                        continue;
+                    }
+                    let (a, z) = (ponto(xs[i], baixo), ponto(xs[i], cima));
+                    d.linha(a.0, a.1, z.0, z.1, c, esp, Traco::Continuo, "analise-erro");
+                    if ponta > 0.0 {
+                        for q in [a, z] {
+                            if horizontal {
+                                d.linha(q.0, q.1 - ponta, q.0, q.1 + ponta, c, esp, Traco::Continuo, "analise-erro");
+                            } else {
+                                d.linha(q.0 - ponta, q.1, q.0 + ponta, q.1, c, esp, Traco::Continuo, "analise-erro");
+                            }
+                        }
+                    }
+                }
+            }
+            // Linha de tendência.
+            if let Some(t) = &an.tendencia {
+                let c = t.cor.map_or(cor, |c| c.0);
+                let esp = t.espessura.unwrap_or(1.6);
+                let traco = t.traco.unwrap_or(Traco::Tracejado);
+                let pts: Vec<(f32, f32)> = if t.tipo == crate::analitico::TipoTendencia::MediaMovel {
+                    crate::analitico::media_movel(&xs, &ys, t.periodo).into_iter().map(|(x, y)| ponto(x, y)).collect()
+                } else if let Some(aj) = crate::analitico::ajustar(t, &xs, &ys) {
+                    let (mut x0, mut x1) = xs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| (a.min(*v), b.max(*v)));
+                    x0 -= t.recuar.max(0.0);
+                    x1 += t.avancar.max(0.0);
+                    if matches!(aj, crate::analitico::Ajuste::Logaritmica { .. } | crate::analitico::Ajuste::Potencia { .. }) {
+                        x0 = x0.max(1e-9);
+                    }
+                    let passos = if matches!(aj, crate::analitico::Ajuste::Linear { .. }) { 1 } else { 80 };
+                    let mut texto = Vec::new();
+                    if t.mostrar_equacao {
+                        texto.push(aj.equacao());
+                    }
+                    if t.mostrar_r2 {
+                        texto.push(format!("R² = {}", format!("{:.4}", aj.r2()).replace('.', ",")));
+                    }
+                    if !texto.is_empty() {
+                        legendas_analise.push((texto.join("   "), c));
+                    }
+                    (0..=passos).map(|k| x0 + (x1 - x0) * k as f64 / passos as f64)
+                        .map(|x| (x, aj.valor(x))).filter(|(_, y)| y.is_finite())
+                        .map(|(x, y)| ponto(x, y)).collect()
+                } else {
+                    Vec::new()
+                };
+                if pts.len() > 1 {
+                    let _ = writeln!(d.corpo, "<path class=\"tendencia s{s}\" d=\"{}\" fill=\"none\" {} stroke-linejoin=\"round\"/>", caminho(&pts, false), tracar(c, esp, traco));
+                }
+            }
+        }
+        // Equação e R² no canto de cima da plotagem, uma linha por série.
+        let f_eq = Fonte::de(&r.base, &Texto::default(), 0.9);
+        for (k, (t, c)) in legendas_analise.iter().enumerate() {
+            let mut f = f_eq.clone();
+            f.cor = *c;
+            d.texto(plot.x + 6.0, plot.y + f.tamanho * (1.2 + 1.3 * k as f32), t, &f, Ancora::Inicio, 0.0, "tendencia-equacao");
+        }
+        d.halo = None;
         d.corpo.push_str("</g>\n");
 
         // Linhas dos eixos e marcas.
@@ -1500,6 +1685,40 @@ mod testes {
         let svg = p.exportar_svg_formatado(400.0, 300.0, &e).unwrap();
         assert!(svg.lines().filter(|l| l.contains("class=\"fatia\"")).nth(2).unwrap().contains("#111111"));
         assert!(svg.contains(">50,0%</text>"));
+    }
+
+    #[test]
+    fn tendencia_com_equacao_barras_de_erro_e_linhas_de_referencia() {
+        use crate::analitico::{Analise, BarrasErro, Tendencia};
+        let mut e = EstiloGrafico::default();
+        e.serie_mut(0).analise = Analise {
+            tendencia: Some(Tendencia { mostrar_equacao: true, mostrar_r2: true, ..Default::default() }),
+            erro: Some(BarrasErro::default()),
+            maximo: true, minimo: true, media: true,
+        };
+        for tipo in [Tipo::Colunas, Tipo::Barras, Tipo::Linhas, Tipo::Area, Tipo::Dispersao] {
+            let mut gr = g(tipo);
+            if tipo == Tipo::Dispersao {
+                gr.categorias = vec!["1".into(), "2".into(), "3".into()];
+            }
+            let svg = gr.exportar_svg_formatado(640.0, 360.0, &e).unwrap();
+            assert!(svg.contains("class=\"tendencia s0\""), "{tipo:?}");
+            assert!(svg.contains("y = 10x + 0") && svg.contains("R² = 1,0000"), "{tipo:?}");
+            assert_eq!(svg.matches("class=\"analise-ref\"").count(), 3, "{tipo:?}");
+            assert!(svg.contains(">Máx: 30</text>") && svg.contains(">Média: 20</text>"), "{tipo:?}");
+            // 3 pontos × (traço + 2 pontas).
+            assert_eq!(svg.matches("class=\"analise-erro\"").count(), 9, "{tipo:?}");
+            assert!(!svg.contains("NaN"));
+        }
+        // A série B não tem análise; pizza ignora.
+        let svg = g(Tipo::Linhas).exportar_svg_formatado(640.0, 360.0, &e).unwrap();
+        assert!(!svg.contains("tendencia s1"));
+        let mut pizza = g(Tipo::Pizza);
+        pizza.series.truncate(1);
+        assert!(!pizza.exportar_svg_formatado(640.0, 360.0, &e).unwrap().contains("tendencia"));
+        // Sem análise o desenho é o de sempre.
+        let limpo = g(Tipo::Linhas).exportar_svg_formatado(640.0, 360.0, &EstiloGrafico::default()).unwrap();
+        assert!(!limpo.contains("analise") && !limpo.contains("tendencia"));
     }
 
     #[test]

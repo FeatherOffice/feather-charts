@@ -82,6 +82,15 @@ impl PedidoAvancado {
 pub struct DadosDica {
     pub categorias: Vec<String>,
     pub series: Vec<(String, Vec<f64>)>,
+    /// `datas[s]`: os valores da série `s` são datas (número de série do
+    /// Excel), mostradas como dd/mm/aaaa. Ausente = número.
+    pub datas: Vec<bool>,
+}
+
+/// Número inteiro entre 1950 e 2150 como data do Excel (dias desde
+/// 30/12/1899): é o que uma célula de data entrega ao gráfico.
+fn parece_data(v: f64) -> bool {
+    v.fract() == 0.0 && (18_264.0..=91_311.0).contains(&v)
 }
 
 pub(super) fn desenhar(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret, p: &PedidoAvancado) {
@@ -287,7 +296,7 @@ fn histograma(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
     }
     let itens: Vec<(f32, String)> = nomes.iter().enumerate().map(|(k, t)| (pl.dados.x + banda * (k as f32 + 0.5), t.clone())).collect();
     rotulos_x(d, r, &pl, &itens);
-    d.mapa.dica = Some(DadosDica { categorias: nomes, series: vec![("Frequência".into(), freq)] });
+    d.mapa.dica = Some(DadosDica { categorias: nomes, series: vec![("Frequência".into(), freq)], ..Default::default() });
 }
 
 fn cascata(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
@@ -337,7 +346,12 @@ fn cascata(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
     rotulos_x(d, r, &pl, &itens);
     let mut valores: Vec<f64> = vals.clone();
     valores.push(saldo);
-    d.mapa.dica = Some(DadosDica { categorias: nomes, series: vec![(g.series[0].nome.clone(), valores)] });
+    let acumulado: Vec<f64> = saldos.iter().map(|(_, ate)| *ate).collect();
+    d.mapa.dica = Some(DadosDica {
+        categorias: nomes,
+        series: vec![(g.series[0].nome.clone(), valores), ("Acumulado".into(), acumulado)],
+        ..Default::default()
+    });
 }
 
 fn radar(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
@@ -426,6 +440,7 @@ fn bolhas(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret, p: &Pedid
     d.mapa.dica = Some(DadosDica {
         categorias: g.categorias.iter().zip(&xs).map(|(c, x)| if c.trim().is_empty() { formatar(*x, fmt, casas_de(*x)) } else { c.clone() }).collect(),
         series: vec![(g.series[0].nome.clone(), ys.clone()), (nome_t, tam)],
+        ..Default::default()
     });
 }
 
@@ -453,6 +468,12 @@ fn velas(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
     d.corpo.push_str("</g>\n");
     let itens: Vec<(f32, String)> = (0..n).map(|i| (pl.dados.x + banda * (i as f32 + 0.5), g.categorias[i].clone())).collect();
     rotulos_x(d, r, &pl, &itens);
+    d.mapa.dica = Some(DadosDica {
+        categorias: g.categorias.clone(),
+        series: ["Abertura", "Máxima", "Mínima", "Fechamento"].iter().zip([ab, hi, lo, fe])
+            .map(|(nome, v)| ((*nome).to_owned(), v.clone())).collect(),
+        ..Default::default()
+    });
 }
 
 fn gantt(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
@@ -487,9 +508,18 @@ fn gantt(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
         let _ = writeln!(d.corpo, "<rect class=\"tarefa p{i}\" x=\"{x0:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{bh:.2}\" rx=\"{:.2}\" {}/>", raio.min(bh / 2.0), preencher(cor));
         d.mapa.pontos.push(AlvoPonto { serie: 0, ponto: i, forma: FormaAlvo::Retangulo { x: x0, y, largura: w, altura: bh } });
     }
+    // Início e término em células de data chegam como número de série:
+    // na dica viram dd/mm/aaaa, e a duração, dias.
+    let datas = ini.iter().chain(fim).all(|v| parece_data(*v));
+    let duracao = if datas { "Duração (dias)" } else { "Duração" };
     d.mapa.dica = Some(DadosDica {
         categorias: g.categorias.clone(),
-        series: vec![("Duração".into(), ini.iter().zip(fim).map(|(a, b)| b - a).collect())],
+        series: vec![
+            ("Início".into(), ini.clone()),
+            ("Término".into(), fim.clone()),
+            (duracao.into(), ini.iter().zip(fim).map(|(a, b)| b - a).collect()),
+        ],
+        datas: vec![datas, datas, false],
     });
 }
 
@@ -642,7 +672,21 @@ mod testes {
         let mut gt = g(2);
         gt.series[1].valores = gt.series[0].valores.iter().map(|v| v + 4.0).collect();
         let (_, m) = gt.exportar_svg_avancado_com_mapa(500.0, 300.0, &e, &PedidoAvancado::novo(TipoAvancado::Gantt)).unwrap();
-        assert_eq!(m.dica.unwrap().series[0].1, vec![4.0; 6]);
+        let alvo = m.pontos[0];
+        let c = m.conteudo_dica(&gt, &alvo).unwrap();
+        let nomes: Vec<&str> = c.linhas.iter().map(|l| l.rotulo.as_str()).collect();
+        assert_eq!(nomes, ["Início", "Término", "Duração"]);
+        assert_eq!(c.linhas[2].valor, 4.0);
+        assert!(!c.linhas[0].data, "números pequenos não são datas");
+        // Datas de verdade (número de série): dd/mm/aaaa e duração em dias.
+        let mut gd = gt.clone();
+        gd.series[0].valores = vec![46_000.0; 6];
+        gd.series[1].valores = vec![46_010.0; 6];
+        let (_, m) = gd.exportar_svg_avancado_com_mapa(500.0, 300.0, &e, &PedidoAvancado::novo(TipoAvancado::Gantt)).unwrap();
+        let c = m.conteudo_dica(&gd, &m.pontos[0]).unwrap();
+        assert!(c.linhas[0].data && c.linhas[1].data && !c.linhas[2].data);
+        assert_eq!(c.linhas[2].rotulo, "Duração (dias)");
+        assert_eq!(crate::formatado::data_de_serie(46_000.0), "09/12/2025");
         gt.series[1].valores[0] = 0.0;
         assert!(gt.exportar_svg_avancado_com_mapa(500.0, 300.0, &e, &PedidoAvancado::novo(TipoAvancado::Gantt)).is_err(), "término antes do início");
     }

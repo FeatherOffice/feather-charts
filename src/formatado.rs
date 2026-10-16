@@ -154,6 +154,35 @@ struct Desenho {
     halo: Option<Cor>,
 }
 
+/// Uma linha da dica do mouse: o nome, o valor e se o valor é data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinhaDica {
+    pub rotulo: String,
+    pub valor: f64,
+    pub data: bool,
+}
+
+/// O que a dica mostra no ponto: título (a categoria) e as linhas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConteudoDica {
+    pub titulo: String,
+    pub linhas: Vec<LinhaDica>,
+}
+
+/// Número de série do Excel (dias desde 30/12/1899) como dd/mm/aaaa.
+pub fn data_de_serie(serie: f64) -> String {
+    let dias = serie.floor() as i64 - 25_569 + 719_468;
+    let era = dias.div_euclid(146_097);
+    let doe = dias.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let dia = doy - (153 * mp + 2) / 5 + 1;
+    let mes = if mp < 10 { mp + 3 } else { mp - 9 };
+    let ano = yoe + era * 400 + i64::from(mes <= 2);
+    format!("{dia:02}/{mes:02}/{ano}")
+}
+
 /// Onde ficou cada parte clicável do gráfico desenhado, em unidades do SVG
 /// (as mesmas de `largura` × `altura`). A interface converte o clique/mouse
 /// para essas unidades e pergunta aqui; nada precisa sair do SVG.
@@ -216,6 +245,32 @@ impl MapaGrafico {
         self.legenda.iter().find(|a| x >= a.x && x <= a.x + a.largura && y >= a.y && y <= a.y + a.altura).map(|a| a.indice)
     }
     /// O ponto de dados sob o mouse (o de cima, quando se sobrepõem).
+    /// O conteúdo da dica no ponto: cada tipo diz o que lhe cabe (Gantt:
+    /// início, término e duração; velas: abertura, máxima, mínima e
+    /// fechamento; cascata: variação e acumulado; bolhas: Y e tamanho;
+    /// histograma: a frequência da faixa). Os demais: a série e o valor.
+    pub fn conteudo_dica(&self, g: &crate::Grafico, alvo: &AlvoPonto) -> Option<ConteudoDica> {
+        let p = alvo.ponto;
+        if let Some(d) = &self.dica {
+            let linhas: Vec<LinhaDica> = d.series.iter().enumerate()
+                .filter_map(|(i, (nome, valores))| Some(LinhaDica {
+                    rotulo: nome.clone(),
+                    valor: *valores.get(p)?,
+                    data: d.datas.get(i).copied().unwrap_or(false),
+                }))
+                .collect();
+            if linhas.is_empty() {
+                return None;
+            }
+            return Some(ConteudoDica { titulo: d.categorias.get(p).cloned().unwrap_or_default(), linhas });
+        }
+        let serie = g.series.get(alvo.serie)?;
+        Some(ConteudoDica {
+            titulo: g.categorias.get(p).cloned().unwrap_or_default(),
+            linhas: vec![LinhaDica { rotulo: serie.nome.clone(), valor: *serie.valores.get(p)?, data: false }],
+        })
+    }
+
     pub fn ponto_em(&self, x: f32, y: f32) -> Option<AlvoPonto> {
         self.pontos.iter().rev().find(|a| a.forma.contem(x, y)).copied()
     }

@@ -492,9 +492,14 @@ fn gantt(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
     let xp = |v: f64| plot.x + plot.w * ex.fracao(v);
     let cor_grade = r.tema.map_or(GRADE_PADRAO, |t| t.grade.0);
     let fmt = e.eixo_y.formato.unwrap_or_default();
+    // Início e término em células de data chegam como número de série: no
+    // eixo viram dd/mm/aaaa (antes saía 46.030), salvo formato escolhido.
+    let datas = ini.iter().chain(fim).all(|v| parece_data(*v));
+    let eixo_de_datas = datas && fmt == FormatoNum::Automatico;
     for v in &ex.ticks {
         d.linha(xp(*v), plot.y, xp(*v), plot.y + plot.h, cor_grade, 1.0, Traco::Continuo, "grade-x");
-        d.texto(xp(*v), plot.y + plot.h + fv.tamanho * 1.15, &formatar(*v, fmt, ex.casas), &fv, Ancora::Meio, 0.0, "rotulo-x");
+        let rotulo = if eixo_de_datas { super::data_de_serie(*v) } else { formatar(*v, fmt, ex.casas) };
+        d.texto(xp(*v), plot.y + plot.h + fv.tamanho * 1.15, &rotulo, &fv, Ancora::Meio, 0.0, "rotulo-x");
     }
     let banda = plot.h / n as f32;
     let bh = (banda * 0.6).min(28.0);
@@ -508,9 +513,7 @@ fn gantt(g: &Grafico, d: &mut Desenho, r: &Resolvido<'_>, caixa: Ret) {
         let _ = writeln!(d.corpo, "<rect class=\"tarefa p{i}\" x=\"{x0:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{bh:.2}\" rx=\"{:.2}\" {}/>", raio.min(bh / 2.0), preencher(cor));
         d.mapa.pontos.push(AlvoPonto { serie: 0, ponto: i, forma: FormaAlvo::Retangulo { x: x0, y, largura: w, altura: bh } });
     }
-    // Início e término em células de data chegam como número de série:
-    // na dica viram dd/mm/aaaa, e a duração, dias.
-    let datas = ini.iter().chain(fim).all(|v| parece_data(*v));
+    // Na dica as datas viram dd/mm/aaaa, e a duração, dias.
     let duracao = if datas { "Duração (dias)" } else { "Duração" };
     d.mapa.dica = Some(DadosDica {
         categorias: g.categorias.clone(),

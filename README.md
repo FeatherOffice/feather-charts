@@ -741,7 +741,7 @@ No `Cargo.toml` do aplicativo (por tag, no estilo do `feather-ui`):
 
 ```toml
 [dependencies]
-feather-charts = { git = "https://github.com/FeatherOffice/feather-charts", tag = "v0.1.0" }
+feather-charts = { git = "https://github.com/FeatherOffice/feather-charts", tag = "v0.3.1" }
 ```
 
 Enquanto o crate não for extraído, o nome em uso no monorepo é
